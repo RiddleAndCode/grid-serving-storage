@@ -11,7 +11,7 @@ The information model covers two interface layers:
 
 ### FlexRequest (Aggregator → HEMS Backend)
 
-Sent by the Technical Aggregator to request storage flexibility from a HEMS Backend's device fleet in a specific grid segment.
+Sent by the Technical Aggregator to request storage flexibility from a HEMS Backend's managed devices in a specific grid segment.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -41,7 +41,7 @@ Sent by the Technical Aggregator to request storage flexibility from a HEMS Back
 
 ### FlexResponse (HEMS Backend → Aggregator)
 
-Sent by the HEMS Backend after collecting and aggregating responses from its device fleet.
+Sent by the HEMS Backend after collecting and aggregating responses from its managed devices.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -51,7 +51,7 @@ Sent by the HEMS Backend after collecting and aggregating responses from its dev
 | `accepted_devices` | integer | yes | Devices that accepted the flex-request |
 | `total_accepted_power_kw` | float | yes | Sum of accepted power across all devices |
 | `avg_soc_percent` | float | yes | Average SoC of participating devices |
-| `estimated_duration_min` | integer | yes | Minimum duration the fleet can sustain |
+| `estimated_duration_min` | integer | yes | Minimum duration the devices can sustain |
 | `timestamp` | ISO 8601 | yes | Time of aggregated response |
 
 **Example**:
@@ -70,7 +70,7 @@ Sent by the HEMS Backend after collecting and aggregating responses from its dev
 
 ### FlexStatus (HEMS Backend → Aggregator, Periodic)
 
-Periodic status update during flex execution. Allows aggregator to track actual fleet delivery.
+Periodic status update during flex execution. Allows aggregator to track actual aggregated delivery.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -146,7 +146,7 @@ The HEMS Backend (acting as OpenADR VTN) translates MQTT messages to/from OpenAD
 | `TELEMETRY_STATUS` | Device online/offline, current mode |
 | `TELEMETRY_USAGE` | Actual power (kW), SoC (%), energy delivered (kWh) |
 
-The HEMS Backend aggregates individual device reports into fleet-level FlexStatus messages on MQTT.
+The HEMS Backend aggregates individual device reports into backend-level FlexStatus messages on MQTT.
 
 ## Data Types & Conventions
 

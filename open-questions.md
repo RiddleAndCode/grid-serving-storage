@@ -31,7 +31,7 @@
 
 ## Next Steps (Post-Hackathon)
 
-1. **Validate with Christoph Wanzenböck / Smart Grids Austria** — confirm alignment with V2G Network project findings and IES methodology expectations
+1. **Validate with Christoph Wanzenböck / Smart Grids Austria** — confirm alignment with Smart Grids Austria project findings and IES methodology expectations
 2. **Prototype the MQTT interface** — implement a minimal aggregator + HEMS backend mock to demonstrate the flex-request/response flow
 3. **OpenADR VEN prototype on KERN device** — implement OpenADR 2.0b VEN capability on the KERN HEMS device
 4. **Formalize as IES profile** — map the rough profile into the official IES interoperability profile template

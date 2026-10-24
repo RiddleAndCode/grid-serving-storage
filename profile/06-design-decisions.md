@@ -11,9 +11,9 @@ Key decisions made in this interoperability profile and their rationale.
 - DSO communicates with HEMS backends directly
 
 **Rationale**:
-- Aligns with the **Austrian V2G system architecture** (Smart Grids Austria / AIT)
+- Aligns with the **Austrian system architecture for flexible assets** (Smart Grids Austria / AIT)
 - The Technical Aggregator is an established market role that already interfaces with DSO and wholesale markets
-- Decouples grid operations from HEMS fleet management — DSO signals grid stress, aggregator handles coordination
+- Decouples grid operations from HEMS device management — DSO signals grid stress, aggregator handles coordination
 - Enables **market participation** (balancing energy, redispatch) beyond pure grid relief
 - Multiple HEMS manufacturers can be coordinated through one aggregator interface
 
@@ -29,8 +29,8 @@ Key decisions made in this interoperability profile and their rationale.
 - REST APIs between aggregator and backends
 
 **Rationale**:
-- **OpenADR on the device** is the Austrian standard for flexible asset control (per Smart Grids Austria V2G architecture). The HEMS device must speak OpenADR regardless of what the backend uses upstream.
-- **MQTT between aggregator and backends** is better suited for fleet coordination: pub/sub scales to many backends, async responses match fleet polling times, lightweight JSON vs. OpenADR XML overhead.
+- **OpenADR on the device** is the Austrian standard for flexible asset control (per Smart Grids Austria architecture). The HEMS device must speak OpenADR regardless of what the backend uses upstream.
+- **MQTT between aggregator and backends** is better suited for device coordination: pub/sub scales to many backends, async responses match device polling times, lightweight JSON vs. OpenADR XML overhead.
 - The HEMS Backend is a natural **protocol bridge** — each manufacturer already operates a backend, adding MQTT is trivial.
 - REST APIs would require the aggregator to integrate per-vendor APIs. MQTT standardizes the interface.
 
@@ -51,11 +51,11 @@ Key decisions made in this interoperability profile and their rationale.
 - OpenADR's event model naturally supports this: VEN responds with optIn/optOut
 - Aligns with Austrian regulatory framework (prosumer sovereignty)
 
-**Consequence**: Aggregator cannot guarantee exact flex volume. Must plan with statistical confidence based on fleet response patterns.
+**Consequence**: Aggregator cannot guarantee exact flex volume. Must plan with statistical confidence based on aggregated response patterns.
 
-## D4: HEMS Backend as Fleet Aggregation Point
+## D4: HEMS Backend as Device Aggregation Point
 
-**Decision**: The HEMS Backend aggregates individual device responses into **fleet-level messages** on MQTT. The aggregator sees fleet summaries, not individual devices.
+**Decision**: The HEMS Backend aggregates individual device responses into **backend-level messages** on MQTT. The aggregator sees backend summaries, not individual devices.
 
 **Alternatives considered**:
 - Individual device messages on MQTT (aggregator sees every device)
@@ -63,9 +63,9 @@ Key decisions made in this interoperability profile and their rationale.
 
 **Rationale**:
 - **Privacy**: Aggregator does not need per-household data (SoC, power consumption patterns)
-- **Scalability**: 1 fleet response message vs. hundreds of individual device messages per event
+- **Scalability**: 1 aggregated response message vs. hundreds of individual device messages per event
 - **Simplicity**: Aggregator manages backends (handful), not devices (thousands)
-- **Manufacturer autonomy**: Each HEMS vendor handles their device fleet internally
+- **Manufacturer autonomy**: Each HEMS vendor handles their devices internally
 
 **Consequence**: Aggregator has less granularity. For settlement and verification, more detailed reports can be requested as a separate (non-real-time) process.
 
@@ -122,16 +122,16 @@ Key decisions made in this interoperability profile and their rationale.
 - Each HEMS Backend knows which of its devices are in which segment (from grid connection registration)
 - The aggregator maps DSO segment IDs to MQTT topics — clean and scalable
 
-**Consequence**: Segment assignment must happen during device commissioning. HEMS Backend must maintain a segment registry for its fleet.
+**Consequence**: Segment assignment must happen during device commissioning. HEMS Backend must maintain a segment registry for its managed devices.
 
 ## Summary Table
 
 | # | Decision | Choice | Key Driver |
 |---|---|---|---|
 | D1 | Architecture | Aggregator-centric | Austrian market architecture (Smart Grids AT) |
-| D2 | Protocols | MQTT (backend) + OpenADR (device) | AT standard for devices + scalability for fleets |
+| D2 | Protocols | MQTT (backend) + OpenADR (device) | AT standard for devices + scalability for backends |
 | D3 | Control philosophy | Soft signal with local autonomy | Prosumer sovereignty + OpenADR optIn/optOut |
-| D4 | Aggregation level | Fleet-level on MQTT | Privacy + scalability + manufacturer autonomy |
+| D4 | Aggregation level | Backend-level on MQTT | Privacy + scalability + manufacturer autonomy |
 | D5 | OpenADR profile | Profile B, push mode | Low-latency event delivery |
 | D6 | Payload formats | JSON (MQTT) + XML (OpenADR) | Best fit per layer |
 | D7 | Failure mode | Fail-safe to prosumer control | Safety + regulatory compliance |

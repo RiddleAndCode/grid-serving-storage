@@ -185,7 +185,7 @@ The grid-serving storage process follows six steps. The architecture has two dis
 | Situation | Behavior |
 |---|---|
 | HEMS device offline when event arrives | OpenADR VTN (backend) marks device as non-participating. Does not count in aggregated response |
-| HEMS Backend offline | MQTT broker queues message (QoS 1, session expiry). Aggregator does not count this backend's fleet |
+| HEMS Backend offline | MQTT broker queues message (QoS 1, session expiry). Aggregator does not count this backend's devices |
 | Battery hits SoC limit during flex | HEMS device updates OpenADR opt-in → backend publishes updated FlexStatus via MQTT |
 | New event before release of previous | New OpenADR event supersedes. HEMS evaluates fresh. Backend notifies aggregator of changed capacity |
 | MQTT broker unreachable | HEMS Backend cannot receive requests. Devices continue normal operation |

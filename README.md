@@ -2,7 +2,7 @@
 
 Interoperability profile for the use case **"Grid-Serving Storage"**, designed using the IES (Integrating the Energy System) methodology.
 
-Based on the V2G system architecture from Smart Grids Austria / AIT (see `challenge/poster-systemarchitektur-v2g.md`).
+Based on the system architecture for flexible assets from Smart Grids Austria / AIT (see `challenge/poster-systemarchitektur-v2g.md`).
 
 ## Challenge
 
@@ -32,7 +32,7 @@ This profile specifically designs the **interface between HEMS Backends and the 
             │              │              │
      ┌──────▼──────┐ ┌────▼─────┐ ┌─────▼─────┐
      │HEMS Backend │ │HEMS Back.│ │HEMS Back. │
-     │  (Fleet 1)  │ │(Fleet 2) │ │(Fleet 3)  │
+     │(Provider A) │ │(Prov. B) │ │(Prov. C)  │
      └──────┬──────┘ └────┬─────┘ └─────┬─────┘
             │              │              │
      ┌──────▼──────┐ ┌────▼─────┐ ┌─────▼─────┐
@@ -42,8 +42,8 @@ This profile specifically designs the **interface between HEMS Backends and the 
      └──────┬──────┘ └────┬─────┘ └─────┬─────┘
             │              │              │
      ┌──────▼──────┐ ┌────▼─────┐ ┌─────▼─────┐
-     │  Battery /  │ │ Battery /│ │ Battery / │
-     │  PV / EV    │ │ PV / EV  │ │ PV / EV   │
+     │  Battery /  │ │ Battery/ │ │ Battery / │
+     │  Battery/PV │ │ Batt./PV │ │ Batt./PV  │
      └─────────────┘ └──────────┘ └───────────┘
 ```
 
@@ -73,7 +73,7 @@ grid-serving-storage/
 
 - **Two interfaces, two protocols**:
   - **HEMS Device ↔ HEMS Backend**: OpenADR 2.0b (Austrian standard for flexible asset control)
-  - **HEMS Backend ↔ Technical Aggregator**: MQTT v5 (lightweight, scalable fleet coordination)
+  - **HEMS Backend ↔ Technical Aggregator**: MQTT v5 (lightweight, scalable device coordination)
 - **Control philosophy**: Soft signal — aggregator requests, HEMS decides locally
 - **Austrian model**: HEMS is the intelligent gateway (no Smart Meter Gateway dependency)
 - **Fail-safe**: Every failure defaults to normal prosumer operation

@@ -7,7 +7,7 @@ Deadline: **Sunday 25 October 2026, 11:30 sharp**
 - [ ] **Clarify AI usage angle** — The hackathon is an AI hackathon. Submission requires explaining "How AI is used". Our deliverable is an interoperability profile. Options to define:
   - AI-assisted design process (Claude as co-author)
   - AI in the HEMS for local optimization / SoC prediction / flex capacity forecasting
-  - AI at aggregator level for fleet response prediction / grid state forecasting
+  - AI at aggregator level for aggregated response prediction / grid state forecasting
   - Needs a clear, honest answer — judges will probe this
 
 - [ ] **Create or decide on demo** — Submission asks for a live URL or 5-min video walkthrough. Options:
@@ -52,7 +52,7 @@ Submission is via TEB form at [submission link]. Template in `challenge/TEB-AI-H
 
 - [ ] **Section 6 — Notes for the jury**
   - This is an interoperability profile design, not running production code
-  - Aligned with Smart Grids Austria V2G system architecture
+  - Aligned with Smart Grids Austria system architecture for flexible assets
   - Dual-protocol: OpenADR 2.0b (device) + MQTT v5 (backend)
   - Validated approach with challenge partner (Wanzenböck conversation)
 
@@ -64,7 +64,7 @@ Submission is via TEB form at [submission link]. Template in `challenge/TEB-AI-H
 ## Done
 
 - [x] Challenge problem statement documented
-- [x] Smart Grids Austria V2G poster downloaded, converted to markdown
+- [x] Smart Grids Austria poster downloaded, converted to markdown
 - [x] Architecture corrected: aggregator-centric (not DSO-direct)
 - [x] Dual-protocol design: MQTT (backend ↔ aggregator) + OpenADR (device ↔ backend)
 - [x] Full IES profile drafted (6 files in `profile/`)

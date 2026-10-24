@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The Technical Aggregator is the central coordination role. Two distinct interfaces connect the layers.
+Based on the Austrian system architecture for flexible assets (Smart Grids Austria / AIT). The Technical Aggregator is the central coordination role. Two distinct interfaces connect the layers.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -25,7 +25,7 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │            Aggregator Platform / Backend                     │   │
-│  │   - Fleet management    - Market bidding                    │   │
+│  │   - Device management   - Market bidding                    │   │
 │  │   - Grid segment mapping - Settlement & reporting           │   │
 │  └──────────────────────────┬──────────────────────────────────┘   │
 │                              │                                      │
@@ -42,7 +42,7 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
 │   HEMS Backend A   │ │ HEMS Backend B│ │ HEMS Backend C │
 │  (Manufacturer X)  │ │(Manufacturer Y│ │(Manufacturer Z)│
 │                    │ │               │ │                │
-│  Fleet: 500 HEMS   │ │ Fleet: 200    │ │ Fleet: 1,000   │
+│                    │ │               │ │                │
 └─────────┬──────────┘ └──────┬────────┘ └───────┬────────┘
           │                   │                   │
    ═══════╪═══════     ═══════╪═══════     ═══════╪═══════
@@ -57,7 +57,7 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
           │                  │                    │
    ┌──────▼──────┐     ┌────▼───────┐     ┌─────▼──────┐
    │ Battery/PV  │     │ Battery/PV │     │ Battery/PV │
-   │ EV/Wallbox  │     │ EV/Wallbox │     │ EV/Wallbox │
+   │ Heat Pump   │     │ Heat Pump  │     │ Heat Pump  │
    └─────────────┘     └────────────┘     └────────────┘
 ```
 
@@ -80,7 +80,7 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
 
 ### Technical Aggregator (Technischer Aggregator)
 
-**Role**: The central market role that pools distributed flexibility from multiple HEMS fleets and offers it to the DSO and wholesale/balancing markets.
+**Role**: The central market role that pools distributed flexibility from multiple HEMS device portfolios and offers it to the DSO and wholesale/balancing markets.
 
 **This is the upstream actor in our interface.**
 
@@ -96,11 +96,11 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
 **Does NOT**:
 - Communicate directly with individual HEMS devices (that's the backend's job)
 - Override HEMS local constraints
-- Know the internal architecture of each HEMS manufacturer's fleet
+- Know the internal architecture of each HEMS manufacturer's device portfolio
 
 ### HEMS Backend (HEMS Manufacturer's Cloud/Server)
 
-**Role**: The manufacturer-operated backend that manages a fleet of HEMS devices. Each HEMS manufacturer operates their own backend. This is the **downstream actor** in the MQTT interface.
+**Role**: The manufacturer-operated backend that manages a portfolio of HEMS devices. Each HEMS manufacturer operates their own backend. This is the **downstream actor** in the MQTT interface.
 
 **This is the downstream actor in our interface.**
 
@@ -111,13 +111,13 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
 - Collect device responses and aggregate them
 - Publish aggregated flex-response to aggregator (via **MQTT**)
 - Stream status updates during flex execution
-- Handle fleet management, firmware updates, device provisioning
+- Handle device management, firmware updates, device provisioning
 
 **Key property**: The HEMS Backend is the **protocol bridge** — it translates between MQTT (aggregator-facing) and OpenADR (device-facing).
 
 ### HEMS Device (Home Energy Management System — On-Site)
 
-**Role**: The intelligent controller at the prosumer's site. Manages local energy assets (battery, PV inverter, wallbox, heat pump).
+**Role**: The intelligent controller at the prosumer's site. Manages local energy assets (battery, PV inverter, heat pump).
 
 **Communicates via OpenADR** as a VEN (Virtual End Node).
 
@@ -133,7 +133,7 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
 **Local device interfaces** (below the HEMS, outside this profile's scope):
 - Battery inverter: Modbus / SunSpec
 - PV inverter: Modbus / SunSpec
-- Wallbox/EVSE: OCPP
+- Heat pump: SG Ready / Modbus
 - Smart Meter: DLMS/COSEM (IEC 62056)
 
 ### Prosumer (Storage Owner / Anlagenbetreiber)
@@ -157,5 +157,5 @@ Based on the Austrian V2G system architecture (Smart Grids Austria / AIT). The T
 | DSO ↔ Aggregator | DSO → Tech. Aggregator | Existing market processes | Outside this profile |
 | **Aggregator ↔ HEMS Backend** | **Tech. Aggregator ↔ HEMS Backend** | **MQTT v5** | **This profile designs this** |
 | **HEMS Backend ↔ HEMS Device** | **HEMS Backend (VTN) ↔ HEMS (VEN)** | **OpenADR 2.0b** | **This profile specifies requirements** |
-| HEMS ↔ Local devices | HEMS → Battery/PV/Wallbox | Modbus / SunSpec / OCPP | Outside this profile |
+| HEMS ↔ Local devices | HEMS → Battery/PV/Heat Pump | Modbus / SunSpec / SG Ready | Outside this profile |
 | DSO ↔ Smart Meter | DSO → Meter | DLMS/COSEM | Outside this profile |
