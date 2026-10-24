@@ -73,8 +73,8 @@ def _init_default_events():
     """Seed standing events that external VENs can poll at startup."""
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow_start = (today + timedelta(days=1)).isoformat(timespec="seconds")
     now_iso = now.isoformat(timespec="seconds")
+    price_intervals = _generate_price_intervals()
 
     default_events = [
         # ── Report request: status every 5 min, per resource ──
@@ -113,18 +113,18 @@ def _init_default_events():
                  "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
             ],
         },
-        # ── Day-ahead prices (24 hourly slots, simulated) ──
+        # ── Day-ahead prices (real aWATTar or simulated fallback) ──
         {
             "id": "evt-day-ahead-prices",
             "programID": "prg-awattar-spot",
-            "eventName": f"day-ahead-{(today + timedelta(days=1)).strftime('%Y-%m-%d')}",
+            "eventName": f"day-ahead-{today.strftime('%Y-%m-%d')}",
             "priority": 10,
             "payloadDescriptors": [
                 {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "PRICE", "units": "KWH", "currency": "EUR"},
                 {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "SIMPLE"},
             ],
-            "intervalPeriod": {"start": tomorrow_start, "duration": "PT1H"},
-            "intervals": _generate_price_intervals(),
+            "intervalPeriod": {"start": now_iso, "duration": "PT1H"},
+            "intervals": price_intervals,
         },
         # ── Default import capacity limit (standing, low priority) ──
         {
@@ -158,10 +158,71 @@ def _init_default_events():
         events[evt["id"]] = evt
 
 
-def _generate_price_intervals() -> list[dict]:
-    """Generate 24 hourly price intervals with realistic Austrian day-ahead shape."""
+def _fetch_awattar_prices() -> list[dict] | None:
+    """Fetch day-ahead prices from the aWATTar AT API.
+
+    Returns OpenADR 3.1 intervals or None if the API is unavailable.
+    API returns prices in €/MWh — we convert to €/kWh for the VEN.
+    """
+    import httpx as _httpx
+    try:
+        now = datetime.now(timezone.utc)
+        # Request from now through end of tomorrow
+        tomorrow_end = (now.replace(hour=0, minute=0, second=0, microsecond=0)
+                        + timedelta(days=2))
+        resp = _httpx.get(
+            "https://api.awattar.at/v1/marketdata",
+            params={
+                "start": int(now.timestamp() * 1000),
+                "end": int(tomorrow_end.timestamp() * 1000),
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        if not data:
+            return None
+
+        intervals = []
+        for i, entry in enumerate(data):
+            price_mwh = entry["marketprice"]       # €/MWh
+            price_kwh = round(price_mwh / 1000, 4)  # €/kWh
+
+            # SIMPLE signal: quartile-based on typical AT range
+            if price_kwh < 0.05:
+                simple = 0  # cheap
+            elif price_kwh < 0.10:
+                simple = 1  # normal
+            elif price_kwh < 0.18:
+                simple = 2  # expensive
+            else:
+                simple = 3  # critical
+
+            start_ms = entry["start_timestamp"]
+            start_iso = datetime.fromtimestamp(
+                start_ms / 1000, tz=timezone.utc
+            ).isoformat(timespec="seconds")
+
+            intervals.append({
+                "id": i,
+                "intervalPeriod": {"start": start_iso, "duration": "PT1H"},
+                "payloads": [
+                    {"type": "PRICE", "values": [price_kwh]},
+                    {"type": "SIMPLE", "values": [simple]},
+                ],
+            })
+
+        log.info(f"Fetched {len(intervals)} hourly prices from aWATTar AT API")
+        return intervals
+
+    except Exception as e:
+        log.warning(f"aWATTar API unavailable ({e}), using simulated prices")
+        return None
+
+
+def _generate_simulated_prices() -> list[dict]:
+    """Fallback: generate 24 hourly prices with realistic Austrian day-ahead shape."""
     import random as _rnd
-    # Typical Austrian autumn price curve (€/kWh): low overnight, peaks at 8h and 18h
     base_prices = [
         0.08, 0.07, 0.06, 0.06, 0.07, 0.09,   # 00–05: overnight low
         0.12, 0.16, 0.19, 0.17, 0.15, 0.14,     # 06–11: morning ramp + peak
@@ -171,12 +232,11 @@ def _generate_price_intervals() -> list[dict]:
     intervals = []
     for h, base in enumerate(base_prices):
         price = round(base + _rnd.uniform(-0.01, 0.01), 4)
-        # SIMPLE: 0=cheap, 1=normal, 2=expensive, 3=critical
-        if price < 0.09:
+        if price < 0.05:
             simple = 0
-        elif price < 0.15:
+        elif price < 0.10:
             simple = 1
-        elif price < 0.20:
+        elif price < 0.18:
             simple = 2
         else:
             simple = 3
@@ -188,6 +248,11 @@ def _generate_price_intervals() -> list[dict]:
             ],
         })
     return intervals
+
+
+def _generate_price_intervals() -> list[dict]:
+    """Try real aWATTar prices, fall back to simulated."""
+    return _fetch_awattar_prices() or _generate_simulated_prices()
 
 
 _init_programs()
