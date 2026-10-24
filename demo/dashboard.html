@@ -405,7 +405,7 @@
 
 <script>
 // ── Config ──
-const BROKER_URL = 'ws://localhost:9001';
+const BROKER_URL = `ws://${location.host}/mqtt`;
 const AGG_ID = 'agg-01';
 const BACKENDS = ['kern-01', 'solar-02', 'flex-03'];
 const COLORS = {

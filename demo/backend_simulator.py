@@ -11,7 +11,6 @@ on the VTN instead of just logging simulated interactions.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import random
@@ -92,25 +91,32 @@ class HEMSBackend:
     def _vtn_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.vtn_token}", "Content-Type": "application/json"}
 
-    def _create_vtn_event(self, dispatch: AggregatorDispatch, dev_id: str, delta_kw: float):
-        """Create an OpenADR 3.1 event on the VTN for a device dispatch."""
+    def _create_vtn_dispatch_event(self, dispatch: AggregatorDispatch, total_delta_kw: float):
+        """Create a single site-level OpenADR 3.1 event on the VTN for this dispatch.
+
+        The VTN event represents the aggregate capacity limit for the whole site,
+        not per-device allocations (device-level MILP stays internal to the backend).
+        The VEN polls this event and distributes the limit across its resources.
+        """
         if not self.vtn_url or not self.vtn_token:
             return
         try:
+            payload_type = "IMPORT_CAPACITY_LIMIT" if dispatch.direction == "down" else "EXPORT_CAPACITY_LIMIT"
+            now = datetime.now(timezone.utc)
             event = {
                 "programID": "prg-grid-capacity",
-                "eventName": f"dispatch-{dispatch.dispatch_id}-{dev_id}",
+                "eventName": f"dispatch-{dispatch.dispatch_id}-{self.id}",
                 "priority": 1 if dispatch.priority == "firm" else (0 if dispatch.priority == "emergency" else 2),
-                "targets": [{"type": "RESOURCE_NAME", "values": [dev_id]}],
-                "intervals": [],
+                "targets": [{"type": "VEN_NAME", "values": [self.id]}],
+                "intervals": [{
+                    "id": 0,
+                    "intervalPeriod": {
+                        "start": now.isoformat(timespec="seconds"),
+                        "duration": f"PT{int(DISPATCH_DURATION_S)}S",
+                    },
+                    "payloads": [{"type": payload_type, "values": [abs(total_delta_kw)]}],
+                }],
             }
-            for slot in dispatch.schedule:
-                payload_type = "IMPORT_CAPACITY_LIMIT" if dispatch.direction == "down" else "EXPORT_CAPACITY_LIMIT"
-                event["intervals"].append({
-                    "id": len(event["intervals"]),
-                    "intervalPeriod": {"start": slot.start, "duration": "PT0S"},
-                    "payloads": [{"type": payload_type, "values": [abs(delta_kw)]}],
-                })
 
             resp = httpx.post(
                 f"{self.vtn_url}/events",
@@ -122,11 +128,47 @@ class HEMSBackend:
             evt_id = resp.json().get("id", "unknown")
             self.vtn_event_ids.append(evt_id)
             log.info(
-                f"  OpenADR 3.1 VTN event created: {dev_id} → "
-                f"{payload_type}={abs(delta_kw):.1f}kW (evt={evt_id})"
+                f"[{self.id}] OpenADR 3.1 VTN event created: "
+                f"{payload_type}={abs(total_delta_kw):.1f}kW (evt={evt_id})"
             )
         except Exception as e:
-            log.warning(f"  OpenADR 3.1 event creation failed for {dev_id}: {e}")
+            log.warning(f"[{self.id}] OpenADR 3.1 event creation failed: {e}")
+
+    def _poll_vtn_reports(self):
+        """Read VEN reports from the VTN to observe device-side telemetry."""
+        if not self.vtn_url or not self.vtn_token:
+            return
+        try:
+            resp = httpx.get(
+                f"{self.vtn_url}/reports",
+                params={"programID": "prg-flex-readiness"},
+                headers=self._vtn_headers(),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            ven_reports = resp.json()
+            # Find the most recent status report (has multiple resources, not forecast)
+            status_reports = [r for r in ven_reports if len(r.get("resources", [])) > 1]
+            if status_reports:
+                latest = status_reports[-1]
+                resources = latest.get("resources", [])
+                for res in resources:
+                    name = res.get("resourceName", "?")
+                    intervals = res.get("intervals", [])
+                    if not intervals:
+                        continue
+                    payloads = intervals[-1].get("payloads", [])
+                    readings = {p["type"]: p["values"][0] for p in payloads if p.get("values")}
+                    if name == "AGGREGATED_REPORT":
+                        reading = readings.get("READING", "?")
+                        state = readings.get("OPERATING_STATE", "?")
+                        shed = readings.get("LOAD_SHED_DELTA_AVAILABLE", "?")
+                        log.info(
+                            f"[{self.id}] VEN report (via VTN): "
+                            f"state={state}, net={reading}kW, shed_avail={shed}kW"
+                        )
+        except Exception as e:
+            log.debug(f"[{self.id}] VTN report poll failed: {e}")
 
     def _delete_vtn_events(self):
         """Remove dispatch events from the VTN (release)."""
@@ -283,17 +325,17 @@ class HEMSBackend:
             if abs(delta) > 0.01:
                 accepted_devices += 1
                 total_accepted += abs(delta)
-                if self.vtn_url:
-                    # Real OpenADR 3.1: create event on VTN
-                    self._create_vtn_event(dispatch, dev_id, delta)
-                else:
-                    # Simulated OpenADR 2.0b
+                if not self.vtn_url:
                     log.info(
                         f"  OpenADR VTN→VEN: oadrDistributeEvent to {dev_id}, "
                         f"setpoint: {delta:+.1f}kW (SoC: {dev.soc_percent:.0f}%)"
                     )
             else:
                 log.info(f"  OpenADR VTN→VEN: {dev_id} optOut (SoC: {dev.soc_percent:.0f}%)")
+
+        # Create a single site-level event on the VTN with the aggregate allocation
+        if self.vtn_url and total_accepted > 0.01:
+            self._create_vtn_dispatch_event(dispatch, total_accepted)
 
         # Publish DispatchAck
         status = "accepted" if total_accepted >= dispatch.target_delta_kw * 0.9 else "partially_accepted"
@@ -365,6 +407,8 @@ class HEMSBackend:
         """Publish FlexStatus during active dispatch."""
         if not self.active_dispatch:
             return
+        # Read VEN telemetry from VTN (closes the feedback loop)
+        self._poll_vtn_reports()
         online = [d for d in self.devices if d.online]
         # Simulate actual delivery with some noise
         target = self.active_dispatch.target_delta_kw
