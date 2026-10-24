@@ -10,7 +10,7 @@ This use case leverages existing distributed storage as a **grid relief resource
 
 Per the Smart Grids Austria system architecture for flexible assets (see `../challenge/poster-systemarchitektur-v2g.md`):
 
-- **Austria favors OpenADR** as the standard for controlling flexible assets
+- **Austria favors OpenADR** as the standard for controlling flexible assets (both 2.0b and 3.1 are supported)
 - **The HEMS is the intelligent gateway** at the prosumer site (unlike Germany's Smart Meter Gateway model)
 - **The Technical Aggregator** is the market role that pools flexibility — devices do not interact directly with the DSO or market
 - **The critical interface** is between HEMS Backends and the Technical Aggregator

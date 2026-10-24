@@ -46,7 +46,8 @@ Based on the Austrian system architecture for flexible assets (Smart Grids Austr
 └─────────┬──────────┘ └──────┬────────┘ └───────┬────────┘
           │                   │                   │
    ═══════╪═══════     ═══════╪═══════     ═══════╪═══════
-   ║  OpenADR 2.0b║    ║  OpenADR 2.0b║    ║  OpenADR 2.0b║
+   ║ OpenADR 2.0b ║    ║ OpenADR 2.0b ║    ║ OpenADR 2.0b ║
+   ║  or 3.1      ║    ║  or 3.1      ║    ║  or 3.1      ║
    ═══════╪═══════     ═══════╪═══════     ═══════╪═══════
           │                   │                   │
    ┌──────▼──────┐     ┌─────▼──────┐     ┌──────▼──────┐
@@ -118,7 +119,7 @@ FCR and aFRR are **not** serviceable through this architecture — they require 
 **Responsibilities**:
 - Receive flex-requests from aggregator (via **MQTT**)
 - Determine which of its managed HEMS devices are in the affected segment and capable of responding
-- Forward flex-requests to individual HEMS devices (via **OpenADR** — acting as VTN)
+- Forward flex-requests to individual HEMS devices (via **OpenADR 2.0b or 3.1** — acting as VTN)
 - Collect device responses and aggregate them
 - Publish aggregated flex-response to aggregator (via **MQTT**)
 - Stream status updates during flex execution
@@ -130,10 +131,10 @@ FCR and aFRR are **not** serviceable through this architecture — they require 
 
 **Role**: The intelligent controller at the prosumer's site. Manages local energy assets (battery, PV inverter, heat pump).
 
-**Communicates via OpenADR** as a VEN (Virtual End Node).
+**Communicates via OpenADR** as a VEN (Virtual End Node). Both OpenADR 2.0b and 3.1 are supported — the choice depends on device capabilities.
 
 **Responsibilities**:
-- Receive flex-requests from HEMS Backend via **OpenADR 2.0b** (as VEN)
+- Receive flex-requests from HEMS Backend via **OpenADR 2.0b or 3.1** (as VEN)
 - Evaluate requests against local constraints (SoC, user preferences, safety limits, hardware limits)
 - Execute accepted flex by adjusting battery charge/discharge setpoints
 - Report actual delivery back to HEMS Backend via **OpenADR reports**
@@ -167,6 +168,6 @@ FCR and aFRR are **not** serviceable through this architecture — they require 
 |---|---|---|---|
 | DSO ↔ Aggregator | DSO → Tech. Aggregator | Existing market processes | Outside this profile |
 | **Aggregator ↔ HEMS Backend** | **Tech. Aggregator ↔ HEMS Backend** | **MQTT v5** | **This profile designs this** |
-| **HEMS Backend ↔ HEMS Device** | **HEMS Backend (VTN) ↔ HEMS (VEN)** | **OpenADR 2.0b** | **This profile specifies requirements** |
+| **HEMS Backend ↔ HEMS Device** | **HEMS Backend (VTN) ↔ HEMS (VEN)** | **OpenADR 2.0b / 3.1** | **This profile specifies requirements** |
 | HEMS ↔ Local devices | HEMS → Battery/PV/Heat Pump | Modbus / SunSpec / SG Ready | Outside this profile |
 | DSO ↔ Smart Meter | DSO → Meter | DLMS/COSEM | Outside this profile |

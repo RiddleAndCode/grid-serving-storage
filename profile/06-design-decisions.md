@@ -21,7 +21,7 @@ Key decisions made in this interoperability profile and their rationale.
 
 ## D2: Dual Protocol — MQTT (Backend) + OpenADR (Device)
 
-**Decision**: Use **MQTT v5** between Aggregator and HEMS Backends, and **OpenADR 2.0b** between HEMS Backends and HEMS Devices.
+**Decision**: Use **MQTT v5** between Aggregator and HEMS Backends, and **OpenADR 2.0b or 3.1** between HEMS Backends and HEMS Devices.
 
 **Alternatives considered**:
 - MQTT end-to-end (aggregator to device)
@@ -30,11 +30,12 @@ Key decisions made in this interoperability profile and their rationale.
 
 **Rationale**:
 - **OpenADR on the device** is the Austrian standard for flexible asset control (per Smart Grids Austria architecture). The HEMS device must speak OpenADR regardless of what the backend uses upstream.
+- **Both OpenADR versions** serve the same profile role — the Backend abstracts version differences from the aggregator. See D15 for version selection rationale.
 - **MQTT between aggregator and backends** is better suited for device coordination: pub/sub scales to many backends, async responses match device polling times, lightweight JSON vs. OpenADR XML overhead.
 - The HEMS Backend is a natural **protocol bridge** — each manufacturer already operates a backend, adding MQTT is trivial.
 - REST APIs would require the aggregator to integrate per-vendor APIs. MQTT standardizes the interface.
 
-**Consequence**: HEMS Backend must implement both protocols. This is acceptable because backends are server-side infrastructure, not constrained embedded devices.
+**Consequence**: HEMS Backend must implement both MQTT and OpenADR. This is acceptable because backends are server-side infrastructure, not constrained embedded devices.
 
 ## D3: Soft Signal with Local Device Autonomy
 
@@ -69,21 +70,23 @@ Key decisions made in this interoperability profile and their rationale.
 
 **Consequence**: Aggregator has less granularity. For settlement and verification, more detailed reports can be requested as a separate (non-real-time) process.
 
-## D5: OpenADR 2.0b Profile B (Push Mode)
+## D5: OpenADR 2.0b Profile B (Push Mode) / 3.1 Subscriptions
 
-**Decision**: Use OpenADR 2.0b **Profile B** with **PUSH mode** (VTN pushes events to VEN).
+**Decision**: Use OpenADR 2.0b **Profile B** with **PUSH mode**, or OpenADR 3.1 with **subscriptions** (webhook or MQTT notification).
 
 **Alternatives considered**:
 - Profile A (simpler, pull-only)
 - Profile B with PULL mode (VEN polls VTN)
+- 3.1 polling only (no subscriptions)
 
 **Rationale**:
-- **Push mode** delivers events immediately — critical for time-sensitive grid relief
+- **Push mode** (2.0b) / **subscriptions** (3.1) deliver events immediately — critical for time-sensitive grid relief
 - Pull mode introduces latency (VEN must poll at intervals)
 - Profile B supports both push and pull, plus reporting — needed for status feedback
-- Profile B is the standard profile for non-trivial deployments
+- OpenADR 3.1 adds MQTT as a subscription transport — the same broker can serve both aggregator↔backend and VTN→VEN notification channels
+- 3.1 polling (GET /events every 15s) is acceptable as a fallback when subscriptions are not configured
 
-**Consequence**: HEMS device must support HTTP server capability (to receive pushed events). Modern HEMS devices typically support this.
+**Consequence**: For 2.0b, HEMS device must support HTTP server capability (to receive pushed events). For 3.1, the VEN can choose between webhook callbacks, MQTT subscriptions, or polling — more flexible deployment options.
 
 ## D6: JSON on MQTT, XML on OpenADR
 
@@ -217,6 +220,32 @@ Key decisions made in this interoperability profile and their rationale.
 
 See `../protocol-analysis-mqtt-vs-openadr.md` for the full protocol fitness analysis.
 
+## D15: OpenADR 3.1 Compatibility (Alongside 2.0b)
+
+**Decision**: The profile supports **both OpenADR 2.0b and 3.1** on the device interface. The HEMS Backend abstracts the version difference — the aggregator-facing MQTT interface is identical regardless of which OpenADR version the devices speak.
+
+**Alternatives considered**:
+- Mandate OpenADR 2.0b only (proven, widely deployed)
+- Mandate OpenADR 3.1 only (modern, but limited deployments)
+- Separate profiles per OpenADR version
+
+**Rationale**:
+- **3.1 is REST/JSON** — aligns with modern web architecture, easier to implement in new devices, machine-readable OpenAPI spec enables code generation
+- **3.1 adds MQTT notifications** — VTN can push event notifications via MQTT, sharing the broker infrastructure with the aggregator↔backend layer
+- **3.1 uses OAuth 2.0** — standard web authentication, no PKI certificate hierarchy required
+- **2.0b is still widely deployed** — existing HEMS devices and VTNs should not be excluded
+- **The HEMS Backend is the abstraction boundary** — it translates between MQTT and whichever OpenADR version its devices support. The aggregator never needs to know.
+
+**Key 3.1 differences affecting the profile**:
+- No explicit optIn/optOut — VTN infers compliance from OPERATING_STATE in reports. The Backend must derive DispatchAck.status from observed behavior.
+- Programs organize events and reports — the Backend maps profile phases to programs (e.g., flex-readiness → Observe, grid-capacity → Dispatch).
+- Report types are richer — STORAGE_CHARGE_LEVEL, STORAGE_DISPATCH_FORECAST, USAGE_FORECAST enable more precise SiteFlexOffer computation.
+- STORAGE_CHARGE_LEVEL uses 0–1 fraction despite being declared as PERCENT — implementations must normalize.
+
+**Consequence**: The profile's information model (04) includes mappings for both versions. HEMS Backend implementations may support one or both. The aggregator-facing interface remains unchanged.
+
+**Validated against**: Reference implementation (home-wetzlas-ven, OpenADR 3.1.0) with VTN at 127.0.0.1:8088, programs AT-flex-readiness / AT-grid-capacity / AT-awattar-spot, per-resource and aggregate reporting every 5 min, hourly 24h forecasts.
+
 ## D8: Grid Segment as Addressing Unit
 
 **Decision**: Flex-requests target a **grid segment** (`segment_id`), not individual devices or backends.
@@ -239,10 +268,10 @@ See `../protocol-analysis-mqtt-vs-openadr.md` for the full protocol fitness anal
 | # | Decision | Choice | Key Driver |
 |---|---|---|---|
 | D1 | Architecture | Aggregator-centric | Austrian market architecture (Smart Grids AT) |
-| D2 | Protocols | MQTT (backend) + OpenADR (device) | AT standard for devices + scalability for backends |
+| D2 | Protocols | MQTT (backend) + OpenADR 2.0b/3.1 (device) | AT standard for devices + scalability for backends |
 | D3 | Control philosophy | Soft signal with local autonomy | Prosumer sovereignty + OpenADR optIn/optOut |
 | D4 | Aggregation level | Backend-level on MQTT | Privacy + scalability + manufacturer autonomy |
-| D5 | OpenADR profile | Profile B, push mode | Low-latency event delivery |
+| D5 | OpenADR delivery | 2.0b Profile B push / 3.1 subscriptions | Low-latency event delivery |
 | D6 | Payload formats | JSON (MQTT) + XML (OpenADR) | Best fit per layer |
 | D7 | Failure mode | Fail-safe to prosumer control | Safety + regulatory compliance |
 | D8 | Addressing | Grid segment ID | Topological grid problem, DSO-defined |
@@ -252,3 +281,4 @@ See `../protocol-analysis-mqtt-vs-openadr.md` for the full protocol fitness anal
 | D12 | Optimization | Two-level hierarchical MILP | Privacy + scalability + manufacturer autonomy |
 | D13 | Market scope | Tier 2 primary (mFRR, congestion), Tier 3 reachable | Tier 1 needs SCADA; HEMS backends serve Tier 2+ |
 | D14 | Protocol-market fitness | One stack, many markets | Dispatch cycle is market-agnostic; only trigger differs |
+| D15 | OpenADR version | Both 2.0b and 3.1 supported | Backend abstracts version; 3.1 adds REST/JSON + MQTT notifications |

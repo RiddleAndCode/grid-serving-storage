@@ -5,13 +5,14 @@
 This profile defines two distinct communication interfaces:
 
 1. **Aggregator ↔ HEMS Backend**: MQTT v5 (backend-level coordination)
-2. **HEMS Backend ↔ HEMS Device**: OpenADR 2.0b (device-level control)
+2. **HEMS Backend ↔ HEMS Device**: OpenADR 2.0b or 3.1 (device-level control)
 
 ```
-┌──────────────┐         MQTT v5          ┌──────────────┐       OpenADR 2.0b      ┌──────────────┐
+┌──────────────┐         MQTT v5          ┌──────────────┐    OpenADR 2.0b / 3.1   ┌──────────────┐
 │  Technical   │◀────────────────────────▶│    HEMS      │◀──────────────────────▶│    HEMS      │
 │  Aggregator  │   Device coordination    │   Backend    │   Device control        │   Device     │
-│              │   JSON over TLS          │   (VTN)      │   XML over HTTPS        │   (VEN)      │
+│              │   JSON over TLS          │   (VTN)      │   2.0b: XML/HTTPS       │   (VEN)      │
+│              │                          │              │   3.1:  JSON/REST+OAuth  │              │
 └──────────────┘                          └──────────────┘                         └──────────────┘
 ```
 
@@ -119,15 +120,18 @@ The aggregator subscribes to:
 
 ---
 
-## Interface 2: HEMS Backend ↔ HEMS Device (OpenADR 2.0b)
+## Interface 2: HEMS Backend ↔ HEMS Device (OpenADR)
+
+This profile supports **both OpenADR 2.0b and OpenADR 3.1** on the device interface. The choice depends on device capabilities and deployment context. Both versions fulfill the same role in the profile — the HEMS Backend abstracts the version difference from the aggregator.
 
 ### Why OpenADR for This Interface
 
 - **Austrian standard**: Smart Grids Austria identifies OpenADR as the favored protocol for controlling flexible assets in Austria
-- **Designed for demand response**: OpenADR's event model (distribute → create → report) maps directly to the flex-request lifecycle
+- **Designed for demand response**: OpenADR's event model maps directly to the flex-request lifecycle
 - **Vendor-neutral**: Any HEMS manufacturer can implement an OpenADR VEN; any backend can implement a VTN
 - **Proven**: Deployed globally for demand response, with active certification program (OpenADR Alliance)
-- **Security built-in**: HTTPS transport with PKI-based authentication
+- **Security built-in**: HTTPS transport with authentication (PKI for 2.0b, OAuth 2.0 for 3.1)
+- **3.1 modernization**: REST/JSON API with OpenAPI spec, MQTT notifications, OAuth 2.0 — aligns with modern web architecture
 
 ### OpenADR Architecture
 
@@ -135,19 +139,22 @@ The aggregator subscribes to:
 ┌─────────────────────┐              ┌─────────────────────┐
 │    HEMS Backend     │              │    HEMS Device      │
 │                     │              │                     │
-│  ┌───────────────┐  │    HTTPS     │  ┌───────────────┐  │
+│  ┌───────────────┐  │  HTTPS/REST  │  ┌───────────────┐  │
 │  │  OpenADR VTN  │◀─┼─────────────┼─▶│  OpenADR VEN  │  │
 │  │               │  │              │  │               │  │
-│  │ - Push events │  │              │  │ - Receive     │  │
-│  │ - Collect     │  │              │  │   events      │  │
-│  │   reports     │  │              │  │ - Opt in/out  │  │
-│  │ - Manage      │  │              │  │ - Report      │  │
-│  │   registr.    │  │              │  │   telemetry   │  │
+│  │ 2.0b:        │  │              │  │ 2.0b:        │  │
+│  │ - Push events │  │              │  │ - Receive XML │  │
+│  │ - XML/SOAP    │  │              │  │ - optIn/optOut│  │
+│  │               │  │              │  │               │  │
+│  │ 3.1:         │  │              │  │ 3.1:         │  │
+│  │ - REST/JSON   │  │              │  │ - Poll/sub   │  │
+│  │ - Programs    │  │              │  │   events     │  │
+│  │ - OAuth 2.0   │  │              │  │ - POST reports│  │
 │  └───────────────┘  │              │  └───────────────┘  │
 └─────────────────────┘              └─────────────────────┘
 ```
 
-### OpenADR Message Flow
+### OpenADR 2.0b Message Flow
 
 | Step | OpenADR Service | Direction | Purpose |
 |---|---|---|---|
@@ -157,31 +164,68 @@ The aggregator subscribes to:
 | Reporting | `EiReport` / `oadrReport` | VEN → VTN | Device reports actual power, SoC |
 | Cancellation | `oadrDistributeEvent` (cancelled) | VTN → VEN | Backend pushes event release |
 
+### OpenADR 3.1 Message Flow
+
+| Step | REST Endpoint | Direction | Purpose |
+|---|---|---|---|
+| Authentication | OAuth 2.0 token endpoint | VEN → VTN | Obtain access token (client credentials) |
+| Registration | `POST /vens`, `POST /vens/{id}/resources` | VEN → VTN | Self-register VEN and its resources |
+| Program discovery | `GET /programs` | VEN → VTN | Discover available programs |
+| Event retrieval | `GET /events` (poll) or MQTT subscription | VEN ← VTN | Receive capacity limits, price signals |
+| Reporting | `POST /reports` | VEN → VTN | Submit telemetry, status, forecasts |
+| Subscriptions | `POST /subscriptions` | VEN → VTN | Subscribe to event notifications (webhook/MQTT) |
+
+**Key 3.1 difference — no explicit optIn/optOut**: Unlike 2.0b, OpenADR 3.1 VENs do not explicitly accept or reject events. The VTN infers compliance from subsequent `OPERATING_STATE` and `READING` values in reports. The HEMS Backend must derive `DispatchAck.status` from observed device behavior.
+
 ### OpenADR Profile Requirements
 
 For the Grid-Serving Storage use case, HEMS devices (VENs) must support:
 
-**Mandatory**:
+**OpenADR 2.0b VEN — Mandatory**:
 - `EiEvent` service — receive events and respond with optIn/optOut
 - `EiRegisterParty` service — register with VTN
 - Signal type: `LOAD_DISPATCH` — direct power setpoint signals
 - `optType` response — communicate acceptance/rejection
 
-**Recommended**:
+**OpenADR 2.0b VEN — Recommended**:
 - `EiReport` service — telemetry reporting (actual power, SoC)
 - Report type: `TELEMETRY_USAGE` — real-time power and energy data
 - Report type: `TELEMETRY_STATUS` — device online/fault status
 
+**OpenADR 3.1 VEN — Mandatory**:
+- OAuth 2.0 client credentials authentication
+- `POST /vens` self-registration with resource declaration
+- `GET /events` or MQTT subscription for event retrieval
+- `POST /reports` with payload types: `READING`, `OPERATING_STATE`, `STORAGE_CHARGE_LEVEL`
+
+**OpenADR 3.1 VEN — Recommended**:
+- `LOAD_SHED_DELTA_AVAILABLE` reports (enables flex offer computation)
+- `USAGE_FORECAST` and `STORAGE_DISPATCH_FORECAST` reports (enables 24h planning)
+- `STORAGE_USABLE_CAPACITY` and `STORAGE_MAX_DISCHARGE_POWER` reports
+- MQTT subscription for real-time event notifications (3.1 feature)
+
 **Transport**:
-- HTTPS (HTTP over TLS 1.2+)
-- OpenADR 2.0b profile B (PUSH mode — VTN pushes events to VEN)
-- XML payloads per OpenADR schema
+
+| | OpenADR 2.0b | OpenADR 3.1 |
+|---|---|---|
+| Protocol | HTTPS (SOAP/XML) | HTTPS (REST/JSON) |
+| Profile | Profile B (PUSH mode) | N/A (REST + subscriptions) |
+| Authentication | Mutual TLS (PKI) | OAuth 2.0 client credentials + server TLS |
+| Notifications | VTN pushes HTTP to VEN | Webhooks, MQTT, or VEN polling |
+| Spec format | Prose document | OpenAPI YAML (machine-readable) |
 
 ### OpenADR Security
 
+**OpenADR 2.0b**:
 - **HTTPS** with TLS 1.2+ (mandatory per OpenADR 2.0b)
 - **OpenADR PKI certificates** — VTN and VEN authenticate via OpenADR Alliance certificate hierarchy (or private PKI)
 - **XML signatures** — optional but recommended for payload integrity
+
+**OpenADR 3.1**:
+- **HTTPS** with TLS 1.2+ for all REST endpoints
+- **OAuth 2.0** client credentials flow — VEN authenticates with client_id/client_secret
+- **Token-based access** — scoped to VEN's own resources
+- **No XML signatures** — JSON payloads rely on transport-level security
 
 ---
 
@@ -190,19 +234,19 @@ For the Grid-Serving Storage use case, HEMS devices (VENs) must support:
 The HEMS Backend is the key integration point, operating in both directions:
 
 **Bottom-up (Observe phase)**:
-1. **Collect** OpenADR reports (TELEMETRY_USAGE, TELEMETRY_STATUS) from managed HEMS devices
+1. **Collect** device reports — OpenADR 2.0b: `oadrReport` (TELEMETRY_USAGE, TELEMETRY_STATUS); OpenADR 3.1: `POST /reports` (READING, STORAGE_CHARGE_LEVEL, LOAD_SHED_DELTA_AVAILABLE, OPERATING_STATE)
 2. **Aggregate** device data into site-level SiteStateSnapshot (power, energy, grid quality)
-3. **Compute** SiteFlexOffer from device capabilities — flexibility envelope, constraints, forecast (learned from device ramp behavior)
+3. **Compute** SiteFlexOffer from device capabilities — flexibility envelope, constraints, forecast (learned from device ramp behavior). In 3.1, the VEN may directly provide forecasts (USAGE_FORECAST, STORAGE_DISPATCH_FORECAST)
 4. **Publish** SiteStateSnapshot and SiteFlexOffer on MQTT
 
 **Top-down (Dispatch phase)**:
 1. **Receive** AggregatorDispatch from aggregator via MQTT (direction, target delta, schedule)
 2. **Run Backend MILP** to distribute the requested delta across managed devices (respecting per-device SoC, ramps, user preferences)
-3. **Translate** per-device goals to OpenADR `oadrDistributeEvent` for each HEMS device
-4. **Collect** OpenADR `oadrCreatedEvent` responses from devices
+3. **Translate** per-device goals — OpenADR 2.0b: `oadrDistributeEvent` per device; OpenADR 3.1: `POST /events` with IMPORT_CAPACITY_LIMIT or LOAD_DISPATCH payloads
+4. **Collect** device responses — OpenADR 2.0b: `oadrCreatedEvent` (optIn/optOut); OpenADR 3.1: infer from subsequent OPERATING_STATE and READING in reports
 5. **Aggregate** device responses into DispatchAck and publish on MQTT
 6. **Periodically collect** OpenADR reports during execution and publish aggregated FlexStatus on MQTT
-7. **Receive** FlexRelease and translate to OpenADR event cancellation
+7. **Receive** FlexRelease — OpenADR 2.0b: translate to event cancellation; OpenADR 3.1: update/remove events via REST
 
 **Settlement**:
 1. **Generate** DeliveryReport from device metering data (requested vs. actual per slot)

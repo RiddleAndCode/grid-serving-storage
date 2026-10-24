@@ -5,16 +5,16 @@
 The information model covers two interface layers with four phases of interaction:
 
 1. **Aggregator ↔ HEMS Backend** (MQTT): JSON messages defined in this profile
-2. **HEMS Backend ↔ HEMS Device** (OpenADR): Mapped to OpenADR 2.0b event/report model
+2. **HEMS Backend ↔ HEMS Device** (OpenADR): Mapped to OpenADR 2.0b event/report model or OpenADR 3.1 REST/JSON model
 
 The four phases define different message types:
 
-| Phase | Direction | MQTT Messages | OpenADR Mapping |
-|---|---|---|---|
-| **Observe** | Bottom-up | SiteStateSnapshot, SiteFlexOffer | oadrReport (TELEMETRY_USAGE, TELEMETRY_STATUS) |
-| **Plan** | Internal | (aggregator-internal, no messages) | — |
-| **Dispatch** | Top-down | AggregatorDispatch, DispatchAck, FlexStatus, FlexRelease | oadrDistributeEvent, oadrCreatedEvent |
-| **Settle** | Bottom-up | DeliveryReport | oadrReport (post-event) |
+| Phase | Direction | MQTT Messages | OpenADR 2.0b Mapping | OpenADR 3.1 Mapping |
+|---|---|---|---|---|
+| **Observe** | Bottom-up | SiteStateSnapshot, SiteFlexOffer | oadrReport (TELEMETRY_USAGE, TELEMETRY_STATUS) | POST /reports (READING, STORAGE_CHARGE_LEVEL, LOAD_SHED_DELTA_AVAILABLE) |
+| **Plan** | Internal | (aggregator-internal, no messages) | — | — |
+| **Dispatch** | Top-down | AggregatorDispatch, DispatchAck, FlexStatus, FlexRelease | oadrDistributeEvent, oadrCreatedEvent | POST /events (IMPORT_CAPACITY_LIMIT, LOAD_DISPATCH) |
+| **Settle** | Bottom-up | DeliveryReport | oadrReport (post-event) | POST /reports (post-event) |
 
 See `../aggregator-interface-spec.md` for the detailed interface specification including TypeScript definitions.
 
@@ -253,7 +253,7 @@ Post-dispatch settlement report. Generated after dispatch completes.
 
 ---
 
-## OpenADR Mapping (HEMS Backend ↔ HEMS Device)
+## OpenADR 2.0b Mapping (HEMS Backend ↔ HEMS Device)
 
 The HEMS Backend (acting as OpenADR VTN) translates MQTT messages to/from OpenADR 2.0b.
 
@@ -287,6 +287,227 @@ The Backend MILP decomposes the aggregator's goal into per-device setpoints, the
 | `TELEMETRY_USAGE` | Actual power (kW), SoC (%), energy delivered (kWh) |
 
 The HEMS Backend aggregates individual device reports into backend-level FlexStatus and DeliveryReport messages on MQTT.
+
+---
+
+## OpenADR 3.1 Mapping (HEMS Backend ↔ HEMS Device)
+
+OpenADR 3.1 replaces the SOAP/XML model with REST/JSON. The HEMS Backend runs a VTN (e.g., openleadr-rs), and HEMS Devices connect as VENs using REST API calls. The mapping below is validated against a reference implementation (home-wetzlas-ven, OpenADR 3.1.0).
+
+### API Structure
+
+| OpenADR 3.1 Resource | Purpose | Direction |
+|---|---|---|
+| `POST /vens` | VEN self-registration | VEN → VTN |
+| `POST /vens/{id}/resources` | Register device resources | VEN → VTN |
+| `GET /programs` | Discover available programs | VEN → VTN |
+| `GET /events` | Retrieve events (signals, limits) | VEN → VTN |
+| `POST /reports` | Submit telemetry and forecasts | VEN → VTN |
+| `POST /subscriptions` | Subscribe to notifications (webhook or MQTT) | VEN → VTN |
+
+### Programs
+
+OpenADR 3.1 organizes communication into **programs**. Each program groups related events and report requirements:
+
+| Program | Purpose | Profile Phase |
+|---|---|---|
+| Flex-readiness (e.g., `AT-flex-readiness`) | VTN requests status reports and forecasts; VEN delivers | Observe |
+| Grid-capacity (e.g., `AT-grid-capacity`) | VTN sends import/export limits to VEN | Dispatch |
+| Spot-price (e.g., `AT-awattar-spot`) | VTN sends price signals to VEN | (Market input) |
+
+### VEN Registration
+
+The VEN authenticates via **OAuth 2.0 client credentials**, then self-registers:
+
+```json
+POST /vens
+{
+  "venName": "home-wetzlas-ven",
+  "attributes": [{ "type": "DESCRIPTION", "values": ["Residential HEMS site"] }]
+}
+
+POST /vens/{ven-id}/resources
+{ "resourceName": "fronius-heiligenkreuz", "attributes": [{ "type": "DESCRIPTION", "values": ["Fronius Symo 10.0"] }] }
+{ "resourceName": "heatpump-plug", "attributes": [{ "type": "DESCRIPTION", "values": ["Heat pump smart plug"] }] }
+```
+
+### Events: VTN → VEN (Dispatch Phase)
+
+#### Capacity Limits (Grid-Capacity Program)
+
+The VTN sends import/export capacity limits as events. These map to the aggregator's dispatch goals:
+
+| Event Pattern | Payload Type | Unit | Profile Mapping |
+|---|---|---|---|
+| Sustained import limit | `IMPORT_CAPACITY_LIMIT` | KW | `AggregatorDispatch.direction: down` |
+| Peak-period import limit | `IMPORT_CAPACITY_LIMIT` (time-bounded) | KW | `AggregatorDispatch.schedule[].delta_kw` |
+| Export limit | `EXPORT_CAPACITY_LIMIT` | KW | `AggregatorDispatch.direction: up` |
+
+Example — daily import limit event:
+```json
+{
+  "programID": "prg-grid-capacity",
+  "eventName": "daily-import-limit",
+  "intervals": [{
+    "id": 0,
+    "intervalPeriod": { "start": "2026-10-24T00:00:00Z", "duration": "P9999Y" },
+    "payloads": [{ "type": "IMPORT_CAPACITY_LIMIT", "values": [8.0] }]
+  }]
+}
+```
+
+Example — peak period limit event:
+```json
+{
+  "programID": "prg-grid-capacity",
+  "eventName": "evening-peak-import-limit-2026-10-24",
+  "intervals": [{
+    "id": 0,
+    "intervalPeriod": { "start": "2026-10-24T16:00:00Z", "duration": "PT3H" },
+    "payloads": [{ "type": "IMPORT_CAPACITY_LIMIT", "values": [2.5] }]
+  }]
+}
+```
+
+**Priority handling**: Overlapping limits resolve by `priority` field — lower number wins. Equal priority → strictest limit applies.
+
+#### Price Signals (Spot-Price Program)
+
+```json
+{
+  "programID": "prg-awattar-spot",
+  "eventName": "awattar-day-ahead-2026-10-24",
+  "intervals": [{
+    "id": 0,
+    "intervalPeriod": { "start": "2026-10-23T22:00:00Z", "duration": "PT1H" },
+    "payloads": [
+      { "type": "PRICE", "values": [0.24191] },
+      { "type": "SIMPLE", "values": [1] }
+    ]
+  }]
+}
+```
+
+### Reports: VEN → VTN (Observe & Settle Phases)
+
+#### Status Reports (Per Resource, Every 5 min)
+
+Map directly to `SiteStateSnapshot` fields when aggregated:
+
+| OpenADR 3.1 Payload Type | Unit | Profile Field (SiteStateSnapshot / SiteFlexOffer) |
+|---|---|---|
+| `READING` | KW | `power.net_kw` (per device) |
+| `OPERATING_STATE` | enum | Device status: `NORMAL`, `RUNNING_CURTAILED`, `RUNNING_HEIGHTENED`, `IDLE_CURTAILED` |
+| `DATA_QUALITY` | enum | `DIRECT_READ` (metered) or `ESTIMATED` (simulated) |
+| `LOAD_SHED_DELTA_AVAILABLE` | KW | `envelope.flex_down_kw` (per device contribution) |
+| `STORAGE_CHARGE_LEVEL` | fraction 0–1 | SoC (note: declared as PERCENT but value is 0–1, e.g., 0.7072 = 70.7%) |
+| `STORAGE_USABLE_CAPACITY` | KWH | Battery usable capacity |
+| `STORAGE_MAX_DISCHARGE_POWER` | KW | Max discharge power |
+
+Example — per-resource report:
+```json
+{
+  "programID": "prg-flex-readiness",
+  "eventID": "evt-status-and-flex-per-resource",
+  "resources": [{
+    "resourceName": "floor-heating",
+    "intervals": [{
+      "id": 133,
+      "intervalPeriod": { "start": "2026-10-24T11:00:09Z", "duration": "PT0S" },
+      "payloads": [
+        { "type": "OPERATING_STATE", "values": ["RUNNING_HEIGHTENED"] },
+        { "type": "DATA_QUALITY", "values": ["ESTIMATED"] },
+        { "type": "READING", "values": [7.3] },
+        { "type": "LOAD_SHED_DELTA_AVAILABLE", "values": [6.7] }
+      ]
+    }]
+  }]
+}
+```
+
+#### Aggregate Site Reports (Every 5 min)
+
+The VEN also sends an aggregate report (all resources combined), mapping directly to `SiteStateSnapshot`:
+
+```json
+{
+  "resourceName": "AGGREGATED_REPORT",
+  "intervals": [{
+    "id": 133,
+    "intervalPeriod": { "start": "2026-10-24T11:00:09Z", "duration": "PT0S" },
+    "payloads": [
+      { "type": "READING", "values": [7.565] },
+      { "type": "LOAD_SHED_DELTA_AVAILABLE", "values": [11.852] },
+      { "type": "OPERATING_STATE", "values": ["RUNNING_HEIGHTENED"] },
+      { "type": "DATA_QUALITY", "values": ["ESTIMATED"] }
+    ]
+  }]
+}
+```
+
+#### Forecast Reports (Hourly, 24h Ahead)
+
+Map to `SiteFlexOffer.forecast`:
+
+| OpenADR 3.1 Payload Type | Profile Field (SiteFlexOffer.forecast) |
+|---|---|
+| `USAGE_FORECAST` (KWH) | Expected net consumption per hour (negative = export) |
+| `LOAD_SHED_DELTA_AVAILABLE` (KW) | `flex_down_kw` per hour |
+| `STORAGE_DISPATCH_FORECAST` (KWH) | Planned storage dispatch per hour |
+| `STORAGE_CHARGE_LEVEL` (fraction) | Expected SoC per hour |
+
+Example — forecast report (24 intervals):
+```json
+{
+  "resourceName": "AGGREGATED_REPORT",
+  "intervals": [
+    {
+      "id": 11,
+      "intervalPeriod": { "start": "2026-10-24T11:00:00Z", "duration": "PT1H" },
+      "payloads": [
+        { "type": "USAGE_FORECAST", "values": [8.0] },
+        { "type": "LOAD_SHED_DELTA_AVAILABLE", "values": [11.852] },
+        { "type": "STORAGE_DISPATCH_FORECAST", "values": [5.072] },
+        { "type": "STORAGE_CHARGE_LEVEL", "values": [0.7072] }
+      ]
+    },
+    {
+      "id": 12,
+      "intervalPeriod": { "start": "2026-10-24T12:00:00Z", "duration": "PT1H" },
+      "payloads": [
+        { "type": "USAGE_FORECAST", "values": [6.195] },
+        { "type": "LOAD_SHED_DELTA_AVAILABLE", "values": [12.1] },
+        { "type": "STORAGE_DISPATCH_FORECAST", "values": [4.8] },
+        { "type": "STORAGE_CHARGE_LEVEL", "values": [0.65] }
+      ]
+    }
+  ]
+}
+```
+
+### Key Differences: OpenADR 3.1 vs. 2.0b
+
+| Aspect | OpenADR 2.0b | OpenADR 3.1 |
+|---|---|---|
+| Transport | SOAP/XML over HTTPS | REST/JSON over HTTPS |
+| Authentication | Mutual TLS (PKI) | OAuth 2.0 client credentials + server TLS |
+| Registration | `EiRegisterParty` handshake | `POST /vens` self-registration |
+| Events | `oadrDistributeEvent` (XML) | `POST /events` or `GET /events` (JSON) |
+| Event response | `oadrCreatedEvent` with optIn/optOut | Indirect: VTN infers from OPERATING_STATE in reports |
+| Reports | `oadrReport` (XML) | `POST /reports` (JSON) with typed payloads |
+| Notifications | Push (VTN → VEN HTTP) or Pull | Webhooks or MQTT (3.1 addition) |
+| Programs | N/A | Programs group events and report requirements |
+| Spec format | Prose document | OpenAPI YAML (machine-readable) |
+
+### Implications for the Profile
+
+1. **No explicit optIn/optOut in 3.1**: Unlike 2.0b's `oadrCreatedEvent`, the VEN does not explicitly accept or reject events. The VTN infers compliance from subsequent `OPERATING_STATE` and `READING` reports. The HEMS Backend must derive `DispatchAck.status` from observed behavior rather than an explicit device response.
+
+2. **STORAGE_CHARGE_LEVEL ambiguity**: The spec declares this as PERCENT but the value is a 0–1 fraction (0.7072 = 70.7%). Implementations must normalize to the profile's convention (0–100% for `soc_percent`).
+
+3. **DATA_QUALITY distinguishes real vs. simulated**: `DIRECT_READ` = metered, `ESTIMATED` = simulated/derived. The HEMS Backend should factor this into the `confidence` field of `SiteFlexOffer`.
+
+4. **MQTT notifications in 3.1**: VENs can subscribe to event notifications via MQTT (in addition to REST polling and webhooks). This aligns naturally with the profile's MQTT-based architecture — the same broker could serve both aggregator↔backend and VTN→VEN notification channels.
 
 ---
 

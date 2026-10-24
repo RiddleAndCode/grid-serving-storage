@@ -16,12 +16,12 @@ from datetime import datetime, timedelta, timezone
 import paho.mqtt.client as mqtt
 import pulp
 
+import config
 from config import (
     AGGREGATOR_ID, MQTT_BROKER, MQTT_PORT, SEGMENT_ID,
-    GRID_OBLIGATION_KW, GRID_OBLIGATION_DIRECTION, GRID_OBLIGATION_REASON,
     DISPATCH_DURATION_S,
     TOPIC_STATE, TOPIC_FLEX, TOPIC_DISPATCH, TOPIC_ACK,
-    TOPIC_STATUS, TOPIC_RELEASE,
+    TOPIC_STATUS, TOPIC_RELEASE, TOPIC_COMMAND, TOPIC_AGG_STATE,
 )
 from models import (
     AggregatorDispatch, DeliveryReport, DispatchAck, DispatchSlot,
@@ -111,8 +111,8 @@ class Aggregator:
             "total_flex_down_kw": round(total_flex_down, 1),
             "total_flex_up_kw": round(total_flex_up, 1),
             "total_baseline_kw": round(total_baseline, 1),
-            "obligation_kw": GRID_OBLIGATION_KW,
-            "can_meet": total_flex_down >= GRID_OBLIGATION_KW,
+            "obligation_kw": config.GRID_OBLIGATION_KW,
+            "can_meet": total_flex_down >= config.GRID_OBLIGATION_KW,
         }
 
     def run_milp(self) -> dict[str, float]:
@@ -129,7 +129,7 @@ class Aggregator:
         # Decision variables: how much to request from each backend
         alloc = {}
         for site_id, offer in self.flex_offers.items():
-            if GRID_OBLIGATION_DIRECTION == "down":
+            if config.GRID_OBLIGATION_DIRECTION == "down":
                 max_kw = offer.envelope.flex_down_kw
             else:
                 max_kw = offer.envelope.flex_up_kw
@@ -137,11 +137,11 @@ class Aggregator:
 
         # Constraint: meet the grid obligation
         total_available = sum(
-            (offer.envelope.flex_down_kw if GRID_OBLIGATION_DIRECTION == "down"
+            (offer.envelope.flex_down_kw if config.GRID_OBLIGATION_DIRECTION == "down"
              else offer.envelope.flex_up_kw)
             for offer in self.flex_offers.values()
         )
-        target = min(GRID_OBLIGATION_KW, total_available)
+        target = min(config.GRID_OBLIGATION_KW, total_available)
         prob += pulp.lpSum(alloc.values()) >= target * 0.95, "meet_obligation"
 
         # Objective: minimize cost, penalizing unreliable backends
@@ -155,7 +155,7 @@ class Aggregator:
         for site_id, offer in self.flex_offers.items():
             prob += (
                 alloc[site_id] <= offer.envelope.flex_down_kw * offer.envelope.confidence
-                if GRID_OBLIGATION_DIRECTION == "down"
+                if config.GRID_OBLIGATION_DIRECTION == "down"
                 else alloc[site_id] <= offer.envelope.flex_up_kw * offer.envelope.confidence
             ), f"confidence_{site_id}"
 
@@ -198,17 +198,18 @@ class Aggregator:
                 dispatch_id=dispatch_id,
                 site_id=site_id,
                 issued_by=AGGREGATOR_ID,
-                direction=GRID_OBLIGATION_DIRECTION,
+                direction=config.GRID_OBLIGATION_DIRECTION,
                 target_delta_kw=delta_kw,
-                schedule=[DispatchSlot(start=start, end=end, delta_kw=-delta_kw)],
-                reason=GRID_OBLIGATION_REASON,
+                schedule=[DispatchSlot(start=start, end=end,
+                                       delta_kw=-delta_kw if config.GRID_OBLIGATION_DIRECTION == "down" else delta_kw)],
+                reason=config.GRID_OBLIGATION_REASON,
                 priority="firm",
             )
             topic = TOPIC_DISPATCH.format(
                 agg_id=AGGREGATOR_ID, segment_id=SEGMENT_ID
             )
             self.client.publish(topic, dispatch.to_json(), qos=1)
-            log.info(f"DISPATCH → {site_id}: {delta_kw:.0f}kW {GRID_OBLIGATION_DIRECTION}")
+            log.info(f"DISPATCH → {site_id}: {delta_kw:.0f}kW {config.GRID_OBLIGATION_DIRECTION}")
 
         return dispatch_id
 
@@ -222,9 +223,72 @@ class Aggregator:
         log.info(f"RELEASE sent for {dispatch_id}")
         self.current_dispatch_id = None
 
+    def publish_state(self):
+        """Publish aggregator portfolio state for the dashboard."""
+        summary = self.portfolio_summary()
+        state = {
+            "timestamp": _now(),
+            "phase": "dispatch" if self.current_dispatch_id else "observe",
+            "dispatch_id": self.current_dispatch_id,
+            "backends_online": summary["backends_online"],
+            "total_flex_down_kw": summary["total_flex_down_kw"],
+            "total_flex_up_kw": summary["total_flex_up_kw"],
+            "total_baseline_kw": summary["total_baseline_kw"],
+            "obligation_kw": summary["obligation_kw"],
+            "can_meet": summary["can_meet"],
+            "acks": {sid: {"status": a.status, "accepted_kw": a.accepted_delta_kw}
+                     for sid, a in self.acks.items()},
+            "delivery_reports": {sid: {"ratio": r.delivery_ratio,
+                                       "requested_kwh": r.total_requested_kwh,
+                                       "delivered_kwh": r.total_delivered_kwh}
+                                 for sid, r in self.delivery_reports.items()},
+        }
+        topic = TOPIC_AGG_STATE.format(agg_id=AGGREGATOR_ID)
+        self.client.publish(topic, json.dumps(state), qos=0, retain=True)
 
-def run_aggregator():
-    """Run the aggregator standalone (for testing without dashboard)."""
+    def handle_command(self, action: str, payload: dict):
+        """Handle commands from dashboard or external trigger."""
+        if action == "dispatch":
+            obligation_kw = payload.get("obligation_kw", config.GRID_OBLIGATION_KW)
+            direction = payload.get("direction", config.GRID_OBLIGATION_DIRECTION)
+            reason = payload.get("reason", "manual")
+            segment = payload.get("segment_id", SEGMENT_ID)
+
+            log.info(f"=== COMMAND: dispatch {obligation_kw:.0f}kW {direction} in {segment} ===")
+
+            orig_kw, orig_dir = config.GRID_OBLIGATION_KW, config.GRID_OBLIGATION_DIRECTION
+            config.GRID_OBLIGATION_KW = obligation_kw
+            config.GRID_OBLIGATION_DIRECTION = direction
+
+            try:
+                allocation = self.run_milp()
+                if allocation:
+                    self.dispatch(allocation)
+            finally:
+                config.GRID_OBLIGATION_KW = orig_kw
+                config.GRID_OBLIGATION_DIRECTION = orig_dir
+
+        elif action == "release":
+            if self.current_dispatch_id:
+                self.release(self.current_dispatch_id)
+            else:
+                log.warning("No active dispatch to release")
+
+        self.publish_state()
+
+
+def run_aggregator(mode: str = "continuous", broker: str | None = None,
+                   port: int | None = None):
+    """Run the aggregator.
+
+    Modes:
+      - "continuous": Run forever, dispatch via MQTT command topic
+      - "oneshot": Observe, dispatch once, settle, exit (original behavior)
+    """
+    import config as _cfg
+    _broker = broker or _cfg.MQTT_BROKER
+    _port = port or _cfg.MQTT_PORT
+
     from config import OBSERVATION_WINDOW_S
 
     logging.basicConfig(
@@ -237,72 +301,113 @@ def run_aggregator():
     agg = Aggregator(client)
 
     def on_connect(client, userdata, flags, reason_code, properties):
-        log.info(f"Aggregator connected (rc={reason_code})")
+        log.info(f"Aggregator connected to {_broker}:{_port} (rc={reason_code})")
         client.subscribe([
             (f"{AGGREGATOR_ID}/observe/+/state", 0),
             (f"{AGGREGATOR_ID}/observe/+/flex", 1),
             (f"{AGGREGATOR_ID}/dispatch/+/ack/+", 1),
             (f"{AGGREGATOR_ID}/dispatch/+/status/+", 0),
             (f"{AGGREGATOR_ID}/settle/+/+", 1),
+            (f"{AGGREGATOR_ID}/command/+", 1),
         ])
-        log.info("Subscribed to observe + dispatch + settle topics")
+        log.info("Subscribed to observe + dispatch + settle + command topics")
 
     def on_message(client, userdata, msg):
-        agg.handle_message(msg.topic, msg.payload.decode())
+        payload_str = msg.payload.decode()
+        if "/command/" in msg.topic:
+            action = msg.topic.split("/")[-1]
+            try:
+                payload = json.loads(payload_str) if payload_str else {}
+            except json.JSONDecodeError:
+                payload = {}
+            agg.handle_command(action, payload)
+        else:
+            agg.handle_message(msg.topic, payload_str)
 
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    client.connect(_broker, _port, 60)
     client.loop_start()
 
-    log.info(f"Observing for {OBSERVATION_WINDOW_S}s before triggering dispatch...")
+    if mode == "oneshot":
+        # Original behavior: observe → dispatch → settle → exit
+        try:
+            log.info(f"Observing for {OBSERVATION_WINDOW_S}s...")
+            time.sleep(OBSERVATION_WINDOW_S)
 
-    try:
-        # Phase 1: Observe
-        time.sleep(OBSERVATION_WINDOW_S)
+            summary = agg.portfolio_summary()
+            log.info(f"Portfolio: {summary['backends_online']} backends, "
+                     f"flex_down={summary['total_flex_down_kw']:.0f}kW")
 
-        summary = agg.portfolio_summary()
-        log.info(
-            f"Portfolio: {summary['backends_online']} backends, "
-            f"flex_down={summary['total_flex_down_kw']:.0f}kW, "
-            f"flex_up={summary['total_flex_up_kw']:.0f}kW"
-        )
+            log.info("=== GRID EVENT ===")
+            allocation = agg.run_milp()
+            dispatch_id = agg.dispatch(allocation)
 
-        if not summary["can_meet"]:
-            log.warning(
-                f"Cannot meet obligation of {GRID_OBLIGATION_KW}kW — "
-                f"only {summary['total_flex_down_kw']:.0f}kW available"
-            )
+            log.info(f"Dispatch active for {DISPATCH_DURATION_S}s...")
+            time.sleep(DISPATCH_DURATION_S)
 
-        # Phase 2+3: Plan + Dispatch
-        log.info("=== GRID EVENT: congestion in seg-LA-0142 ===")
-        allocation = agg.run_milp()
-        dispatch_id = agg.dispatch(allocation)
+            agg.release(dispatch_id)
+            time.sleep(3)
 
-        # Phase 3: Monitor execution
-        log.info(f"Dispatch active for {DISPATCH_DURATION_S}s...")
-        time.sleep(DISPATCH_DURATION_S)
+            log.info("=== SETTLEMENT ===")
+            for sid, report in agg.delivery_reports.items():
+                log.info(f"  {sid}: {report.delivery_ratio:.1%}")
 
-        # Phase 4: Release + Settle
-        agg.release(dispatch_id)
-        time.sleep(3)  # Wait for delivery reports
+        except KeyboardInterrupt:
+            if agg.current_dispatch_id:
+                agg.release(agg.current_dispatch_id)
+        finally:
+            client.loop_stop()
+            client.disconnect()
 
-        # Print settlement
-        log.info("=== SETTLEMENT ===")
-        for sid, report in agg.delivery_reports.items():
-            log.info(
-                f"  {sid}: delivered {report.total_delivered_kwh:.1f}/"
-                f"{report.total_requested_kwh:.1f} kWh "
-                f"(ratio={report.delivery_ratio:.1%})"
-            )
+    else:
+        # Continuous mode: observe forever, dispatch via command topic
+        log.info("Aggregator running in continuous mode")
+        log.info(f"  Trigger dispatch: publish to {AGGREGATOR_ID}/command/dispatch")
+        log.info(f"  Release:          publish to {AGGREGATOR_ID}/command/release")
+        log.info(f"  Portfolio state:  {AGGREGATOR_ID}/state/portfolio (retained)")
 
-    except KeyboardInterrupt:
-        if agg.current_dispatch_id:
-            agg.release(agg.current_dispatch_id)
-    finally:
-        client.loop_stop()
-        client.disconnect()
+        try:
+            last_state_publish = 0.0
+            while True:
+                now = time.time()
+                # Publish portfolio state every 5 seconds
+                if now - last_state_publish >= 5.0:
+                    agg.publish_state()
+                    last_state_publish = now
+
+                    # Log summary periodically
+                    summary = agg.portfolio_summary()
+                    if summary["backends_online"] > 0:
+                        log.info(
+                            f"Portfolio: {summary['backends_online']} backends, "
+                            f"flex_down={summary['total_flex_down_kw']:.0f}kW, "
+                            f"flex_up={summary['total_flex_up_kw']:.0f}kW"
+                            + (f" | ACTIVE dispatch {agg.current_dispatch_id}"
+                               if agg.current_dispatch_id else "")
+                        )
+
+                time.sleep(1)
+
+        except KeyboardInterrupt:
+            log.info("Aggregator shutting down")
+            if agg.current_dispatch_id:
+                agg.release(agg.current_dispatch_id)
+        finally:
+            client.loop_stop()
+            client.disconnect()
 
 
 if __name__ == "__main__":
-    run_aggregator()
+    import argparse
+    parser = argparse.ArgumentParser(description="Technical Aggregator")
+    parser.add_argument(
+        "--mode",
+        choices=["continuous", "oneshot"],
+        default="continuous",
+        help="continuous: run forever, trigger via MQTT. oneshot: single cycle then exit.",
+    )
+    parser.add_argument("--broker", type=str, default=None, help="MQTT broker host")
+    args = parser.parse_args()
+
+    run_aggregator(mode=args.mode, broker=args.broker)

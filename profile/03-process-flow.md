@@ -4,7 +4,7 @@
 
 The grid-serving storage system operates as a **continuous four-phase loop**: Observe → Plan → Dispatch → Settle. The architecture has two distinct communication segments:
 - **Aggregator ↔ HEMS Backend**: MQTT v5
-- **HEMS Backend ↔ HEMS Device**: OpenADR 2.0b (VTN ↔ VEN)
+- **HEMS Backend ↔ HEMS Device**: OpenADR 2.0b / 3.1 (VTN ↔ VEN)
 
 **This process flow applies identically across all serviceable markets.** Whether the trigger is a DSO congestion signal, an mFRR activation from APG, an intraday market position, or a local flexibility market clearing — the dispatch cycle is the same. Only the upstream trigger differs.
 
@@ -237,7 +237,7 @@ Each HEMS device receives the OpenADR event and evaluates locally:
 
 #### Step 4 — Device Response
 
-Devices respond via OpenADR `oadrCreatedEvent` with optIn/optOut and accepted power.
+Devices respond via OpenADR `oadrCreatedEvent` (2.0b) with optIn/optOut and accepted power. In OpenADR 3.1, there is no explicit optIn/optOut — the VTN infers compliance from subsequent `OPERATING_STATE` and `READING` reports.
 
 #### Step 5 — Backend Aggregates and Acknowledges
 
@@ -252,7 +252,7 @@ Devices execute the flex. The HEMS Backend periodically collects OpenADR reports
 
 #### Step 7 — Release
 
-The aggregator publishes a release signal. The backend translates to OpenADR event cancellation. Devices resume normal operation. Automatic release via event duration expiry acts as fail-safe.
+The aggregator publishes a release signal. The backend translates to OpenADR event cancellation (2.0b: cancelled event; 3.1: update/remove event via REST). Devices resume normal operation. Automatic release via event duration expiry acts as fail-safe.
 
 ---
 

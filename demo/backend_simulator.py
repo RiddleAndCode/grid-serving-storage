@@ -4,6 +4,9 @@ Simulates N HEMS backends, each managing M devices.
 Phase 1 (Observe): publishes SiteStateSnapshot + SiteFlexOffer.
 Phase 3 (Dispatch): receives AggregatorDispatch, runs device-level MILP,
                     publishes DispatchAck, FlexStatus, DeliveryReport.
+
+When a VTN URL is configured, the backend creates real OpenADR 3.1 events
+on the VTN instead of just logging simulated interactions.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import random
 import time
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import paho.mqtt.client as mqtt
 import pulp
 
@@ -37,7 +41,7 @@ log = logging.getLogger("backend")
 class HEMSBackend:
     """Simulates one HEMS backend with its managed devices."""
 
-    def __init__(self, cfg: dict, client: mqtt.Client):
+    def __init__(self, cfg: dict, client: mqtt.Client, vtn_url: str | None = None):
         self.cfg = cfg
         self.id = cfg["id"]
         self.client = client
@@ -46,35 +50,127 @@ class HEMSBackend:
         self.dispatch_start_time: float | None = None
         self.total_requested_kwh = 0.0
         self.total_delivered_kwh = 0.0
+        self.vtn_url = vtn_url
+        self.vtn_token: str | None = None
+        self.vtn_event_ids: list[str] = []
         self._init_devices()
+        if self.vtn_url:
+            self._init_vtn()
 
     def _init_devices(self):
         """Create simulated devices with randomized but realistic state."""
         for i in range(self.cfg["device_count"]):
+            peak_pv = self.cfg["avg_pv_kw"] * random.uniform(0.7, 1.3) if self.cfg["has_pv"] else 0
             dev = SimulatedDevice(
                 device_id=f"{self.id}-dev-{i:03d}",
                 battery_kw=self.cfg["avg_battery_kw"] * random.uniform(0.7, 1.3),
                 battery_kwh=self.cfg["avg_battery_kwh"] * random.uniform(0.8, 1.2),
                 soc_percent=random.uniform(25, 90),
-                pv_kw=self.cfg["avg_pv_kw"] * random.uniform(0.0, 1.0) if self.cfg["has_pv"] else 0,
-                consumption_kw=random.uniform(0.5, 4.0),
+                pv_kw=max(0.0, peak_pv * random.uniform(0.3, 0.9)),
+                consumption_kw=max(0.2, random.uniform(0.5, 4.0)),
                 online=random.random() > 0.05,  # 95% online
                 min_soc=random.uniform(15, 25),
                 max_soc=random.uniform(90, 98),
             )
             self.devices.append(dev)
 
+    def _init_vtn(self):
+        """Authenticate with the OpenADR 3.1 VTN."""
+        try:
+            resp = httpx.post(
+                f"{self.vtn_url}/auth/token",
+                json={"grant_type": "client_credentials", "client_id": f"backend-{self.id}", "client_secret": "demo"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            self.vtn_token = resp.json()["access_token"]
+            log.info(f"[{self.id}] Authenticated with VTN at {self.vtn_url}")
+        except Exception as e:
+            log.warning(f"[{self.id}] VTN auth failed: {e} — falling back to simulated OpenADR")
+            self.vtn_url = None
+
+    def _vtn_headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.vtn_token}", "Content-Type": "application/json"}
+
+    def _create_vtn_event(self, dispatch: AggregatorDispatch, dev_id: str, delta_kw: float):
+        """Create an OpenADR 3.1 event on the VTN for a device dispatch."""
+        if not self.vtn_url or not self.vtn_token:
+            return
+        try:
+            event = {
+                "programID": "prg-grid-capacity",
+                "eventName": f"dispatch-{dispatch.dispatch_id}-{dev_id}",
+                "priority": 1 if dispatch.priority == "firm" else (0 if dispatch.priority == "emergency" else 2),
+                "targets": [{"type": "RESOURCE_NAME", "values": [dev_id]}],
+                "intervals": [],
+            }
+            for slot in dispatch.schedule:
+                payload_type = "IMPORT_CAPACITY_LIMIT" if dispatch.direction == "down" else "EXPORT_CAPACITY_LIMIT"
+                event["intervals"].append({
+                    "id": len(event["intervals"]),
+                    "intervalPeriod": {"start": slot.start, "duration": "PT0S"},
+                    "payloads": [{"type": payload_type, "values": [abs(delta_kw)]}],
+                })
+
+            resp = httpx.post(
+                f"{self.vtn_url}/events",
+                json=event,
+                headers=self._vtn_headers(),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            evt_id = resp.json().get("id", "unknown")
+            self.vtn_event_ids.append(evt_id)
+            log.info(
+                f"  OpenADR 3.1 VTN event created: {dev_id} → "
+                f"{payload_type}={abs(delta_kw):.1f}kW (evt={evt_id})"
+            )
+        except Exception as e:
+            log.warning(f"  OpenADR 3.1 event creation failed for {dev_id}: {e}")
+
+    def _delete_vtn_events(self):
+        """Remove dispatch events from the VTN (release)."""
+        if not self.vtn_url or not self.vtn_token:
+            return
+        for evt_id in self.vtn_event_ids:
+            try:
+                httpx.delete(
+                    f"{self.vtn_url}/events/{evt_id}",
+                    headers=self._vtn_headers(),
+                    timeout=10,
+                )
+                log.info(f"  OpenADR 3.1 VTN event deleted: {evt_id}")
+            except Exception as e:
+                log.warning(f"  OpenADR 3.1 event delete failed for {evt_id}: {e}")
+        self.vtn_event_ids.clear()
+
     def _drift_devices(self):
-        """Small random drift to simulate changing conditions."""
+        """Update device PV and consumption with gentle random walk."""
         for dev in self.devices:
             if not dev.online:
                 if random.random() < 0.1:
                     dev.online = True
                 continue
-            dev.soc_percent += random.uniform(-1.5, 1.5)
+
+            # PV: gentle random walk around current value
+            if self.cfg["has_pv"]:
+                peak_pv = self.cfg["avg_pv_kw"]
+                dev.pv_kw += random.uniform(-0.3, 0.3) * peak_pv * 0.1
+                dev.pv_kw = max(0.0, min(peak_pv * 1.3, dev.pv_kw))
+            else:
+                dev.pv_kw = 0.0
+
+            # Consumption: gentle random walk
+            dev.consumption_kw += random.uniform(-0.2, 0.2)
+            dev.consumption_kw = max(0.2, min(5.0, dev.consumption_kw))
+
+            # SoC drifts based on net power
+            if dev.pv_kw > dev.consumption_kw:
+                dev.soc_percent += random.uniform(0.5, 2.0)
+            else:
+                dev.soc_percent -= random.uniform(0.3, 1.5)
             dev.soc_percent = max(dev.min_soc, min(dev.max_soc, dev.soc_percent))
-            dev.pv_kw = max(0, dev.pv_kw + random.uniform(-0.3, 0.3))
-            dev.consumption_kw = max(0.2, dev.consumption_kw + random.uniform(-0.2, 0.2))
+
             if random.random() < 0.02:
                 dev.online = False
 
@@ -84,6 +180,15 @@ class HEMSBackend:
         total_pv = sum(d.pv_kw for d in online)
         total_consumption = sum(d.consumption_kw for d in online)
         net = total_consumption - total_pv
+
+        # During active dispatch, reflect the battery power shift in net power
+        if self.active_dispatch:
+            actual = self.active_dispatch.target_delta_kw * random.uniform(0.85, 1.0)
+            if self.active_dispatch.direction == "down":
+                net -= actual  # discharging batteries offsets consumption
+            else:
+                net += actual  # charging batteries adds to consumption
+
         return SiteStateSnapshot(
             site_id=self.id,
             grid_capacity_kw=self.cfg["avg_battery_kw"] * self.cfg["device_count"],
@@ -170,7 +275,7 @@ class HEMSBackend:
         # Run device-level MILP
         allocation = self._run_device_milp(dispatch)
 
-        # Simulate OpenADR interactions
+        # Dispatch to devices via OpenADR
         accepted_devices = 0
         total_accepted = 0.0
         for dev_id, delta in allocation.items():
@@ -178,10 +283,15 @@ class HEMSBackend:
             if abs(delta) > 0.01:
                 accepted_devices += 1
                 total_accepted += abs(delta)
-                log.info(
-                    f"  OpenADR VTN→VEN: oadrDistributeEvent to {dev_id}, "
-                    f"setpoint: {delta:+.1f}kW (SoC: {dev.soc_percent:.0f}%)"
-                )
+                if self.vtn_url:
+                    # Real OpenADR 3.1: create event on VTN
+                    self._create_vtn_event(dispatch, dev_id, delta)
+                else:
+                    # Simulated OpenADR 2.0b
+                    log.info(
+                        f"  OpenADR VTN→VEN: oadrDistributeEvent to {dev_id}, "
+                        f"setpoint: {delta:+.1f}kW (SoC: {dev.soc_percent:.0f}%)"
+                    )
             else:
                 log.info(f"  OpenADR VTN→VEN: {dev_id} optOut (SoC: {dev.soc_percent:.0f}%)")
 
@@ -288,6 +398,9 @@ class HEMSBackend:
         if not self.active_dispatch or self.active_dispatch.dispatch_id != dispatch_id:
             return
 
+        # Clean up OpenADR 3.1 events on VTN
+        self._delete_vtn_events()
+
         ratio = self.total_delivered_kwh / max(0.001, self.total_requested_kwh)
         report = DeliveryReport(
             dispatch_id=dispatch_id,
@@ -310,31 +423,18 @@ class HEMSBackend:
         self.dispatch_start_time = None
 
 
-def run_backends():
-    """Run all backend simulators."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="backend-sim")
-    backends: list[HEMSBackend] = []
-
-    for cfg in BACKENDS:
-        backends.append(HEMSBackend(cfg, client))
+def _run_loop(backends: list[HEMSBackend], client: mqtt.Client,
+              broker: str | None = None, port: int | None = None):
+    """Main publish loop shared by single and multi-backend modes."""
+    import config as _cfg
+    _broker = broker or _cfg.MQTT_BROKER
+    _port = port or _cfg.MQTT_PORT
 
     def on_connect(client, userdata, flags, reason_code, properties):
-        log.info(f"Backend simulator connected (rc={reason_code})")
-        # Subscribe to dispatch and release topics
-        dispatch_topic = TOPIC_DISPATCH.format(
-            agg_id=AGGREGATOR_ID, segment_id="+"
-        )
-        release_topic = TOPIC_RELEASE.format(
-            agg_id=AGGREGATOR_ID, segment_id="+"
-        )
+        log.info(f"Backend(s) connected to {_broker}:{_port} (rc={reason_code})")
+        dispatch_topic = TOPIC_DISPATCH.format(agg_id=AGGREGATOR_ID, segment_id="+")
+        release_topic = TOPIC_RELEASE.format(agg_id=AGGREGATOR_ID, segment_id="+")
         client.subscribe([(dispatch_topic, 1), (release_topic, 1)])
-        log.info(f"Subscribed to dispatch: {dispatch_topic}")
 
     def on_message(client, userdata, msg):
         payload = msg.payload.decode()
@@ -351,10 +451,10 @@ def run_backends():
 
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    client.connect(_broker, _port, 60)
     client.loop_start()
 
-    log.info(f"Starting {len(backends)} backends: {[b.id for b in backends]}")
+    log.info(f"Running backends: {[b.id for b in backends]}")
 
     try:
         last_snapshot = 0.0
@@ -388,5 +488,60 @@ def run_backends():
         client.disconnect()
 
 
+def run_backends(backend_ids: list[str] | None = None,
+                 broker: str | None = None, port: int | None = None,
+                 vtn_url: str | None = None):
+    """Run backend simulators.
+
+    Args:
+        backend_ids: List of backend IDs to run. None = all backends.
+        broker: MQTT broker host. None = use config default.
+        port: MQTT broker port. None = use config default.
+        vtn_url: OpenADR 3.1 VTN base URL. None = simulate OpenADR in-process.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    configs = BACKENDS
+    if backend_ids:
+        configs = [c for c in BACKENDS if c["id"] in backend_ids]
+        if not configs:
+            log.error(f"No matching backend config for {backend_ids}. Available: {[c['id'] for c in BACKENDS]}")
+            return
+
+    client_id = f"backend-{configs[0]['id']}" if len(configs) == 1 else "backend-sim"
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+    backends = [HEMSBackend(cfg, client, vtn_url=vtn_url) for cfg in configs]
+    _run_loop(backends, client, broker=broker, port=port)
+
+
 if __name__ == "__main__":
-    run_backends()
+    import argparse
+    parser = argparse.ArgumentParser(description="HEMS Backend Simulator")
+    parser.add_argument(
+        "--backend-id",
+        type=str,
+        default=None,
+        help="Run a single backend by ID (e.g. kern-01). Default: run all.",
+    )
+    parser.add_argument(
+        "--broker",
+        type=str,
+        default=None,
+        help="MQTT broker host (default: from config.py)",
+    )
+    parser.add_argument(
+        "--vtn-url",
+        type=str,
+        default=None,
+        help="OpenADR 3.1 VTN URL (e.g. http://localhost:8088). Default: simulate OpenADR in-process.",
+    )
+    args = parser.parse_args()
+
+    if args.backend_id:
+        run_backends([args.backend_id], broker=args.broker, vtn_url=args.vtn_url)
+    else:
+        run_backends(broker=args.broker, vtn_url=args.vtn_url)

@@ -25,6 +25,8 @@ TOPIC_ACK = "{agg_id}/dispatch/{segment_id}/ack/{backend_id}"
 TOPIC_STATUS = "{agg_id}/dispatch/{segment_id}/status/{backend_id}"
 TOPIC_RELEASE = "{agg_id}/dispatch/{segment_id}/release"
 TOPIC_SETTLE = "{agg_id}/settle/{backend_id}/{dispatch_id}"
+TOPIC_COMMAND = "{agg_id}/command/{action}"
+TOPIC_AGG_STATE = "{agg_id}/state/portfolio"
 
 # Backend configurations — realistic Austrian HEMS portfolios
 BACKENDS = [

@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grid-Serving Storage — Live Dashboard</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e0e0e0;
+    --dim: #888;
+    --cyan: #00bcd4;
+    --yellow: #ffc107;
+    --red: #f44336;
+    --green: #4caf50;
+    --magenta: #e040fb;
+    --blue: #2196f3;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+    font-size: 13px;
+  }
+  h1 {
+    font-size: 18px;
+    margin-bottom: 4px;
+    color: white;
+  }
+  .subtitle { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .phase-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding: 10px 16px;
+    background: var(--card);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    align-items: center;
+  }
+  .phase-step {
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    opacity: 0.3;
+    transition: all 0.3s;
+  }
+  .phase-step.active { opacity: 1; transform: scale(1.05); }
+  .phase-step.done { opacity: 0.7; }
+  .phase-observe { background: var(--cyan); color: black; }
+  .phase-plan { background: var(--yellow); color: black; }
+  .phase-dispatch { background: var(--red); color: white; }
+  .phase-execute { background: var(--magenta); color: white; }
+  .phase-settle { background: var(--green); color: black; }
+  .phase-label { color: var(--dim); font-size: 12px; margin-left: auto; }
+  #connection-status {
+    margin-left: 8px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .connected { background: var(--green); color: black; }
+  .disconnected { background: var(--red); color: white; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h3 {
+    font-size: 13px;
+    color: var(--dim);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .card canvas { width: 100% !important; }
+  .card.full-width { grid-column: 1 / -1; }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--dim); }
+  .stat-value { font-weight: bold; }
+  .stat-value.positive { color: var(--green); }
+  .stat-value.negative { color: var(--red); }
+
+  .event-log {
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 11px;
+    line-height: 1.6;
+  }
+  .event-log .entry { padding: 2px 0; }
+  .event-log .ts { color: var(--dim); }
+  .event-log .observe { color: var(--cyan); }
+  .event-log .dispatch { color: var(--yellow); }
+  .event-log .execute { color: var(--magenta); }
+  .event-log .settle { color: var(--green); }
+
+  .conclusion-box {
+    background: linear-gradient(135deg, #1a2a1a, #1a1d27);
+    border: 1px solid var(--green);
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+  }
+  .conclusion-box h3 { color: var(--green); }
+  .conclusion-item {
+    padding: 6px 0;
+    display: flex;
+    gap: 12px;
+  }
+  .conclusion-num {
+    color: var(--green);
+    font-weight: bold;
+    min-width: 20px;
+  }
+
+  /* Decision panel */
+  .decision-panel {
+    background: linear-gradient(135deg, #1a1d2a, #1a1d27);
+    border: 1px solid var(--yellow);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .decision-panel h3 { color: var(--yellow); margin-bottom: 8px; }
+  .decision-summary {
+    font-size: 12px;
+    color: var(--dim);
+    margin-bottom: 12px;
+    line-height: 1.6;
+  }
+  .decision-summary strong { color: var(--text); }
+  .decision-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .decision-table th {
+    text-align: left;
+    color: var(--dim);
+    font-weight: normal;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 10px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .decision-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .decision-table tr:last-child td { border-bottom: none; }
+  .decision-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .decision-bar {
+    display: inline-block;
+    height: 10px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 4px;
+  }
+  .decision-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: bold;
+  }
+  .tag-dispatched { background: var(--yellow); color: black; }
+  .tag-skipped { background: var(--border); color: var(--dim); }
+  .tag-accepted { background: var(--green); color: black; }
+  .tag-partial { background: var(--yellow); color: black; }
+  .tag-rejected { background: var(--red); color: white; }
+  .decision-rationale {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--dim);
+  }
+  .decision-rationale .label { color: var(--yellow); font-weight: bold; }
+
+  /* Control panel */
+  .control-panel {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .control-panel label {
+    color: var(--dim);
+    font-size: 12px;
+  }
+  .control-panel input[type="range"] {
+    width: 120px;
+    accent-color: var(--yellow);
+  }
+  .control-panel select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .control-panel .value-display {
+    color: var(--yellow);
+    font-weight: bold;
+    min-width: 50px;
+  }
+  .btn {
+    padding: 6px 16px;
+    border: none;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn:hover { transform: scale(1.05); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  .btn-dispatch { background: var(--yellow); color: black; }
+  .btn-release { background: var(--green); color: black; }
+  .btn-release:disabled { background: var(--dim); }
+
+  .alert {
+    padding: 10px 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    display: none;
+  }
+  .alert-error {
+    background: rgba(244,67,54,0.15);
+    border: 1px solid var(--red);
+    color: var(--red);
+  }
+
+  /* Aggregator state panel */
+  .agg-state {
+    display: flex;
+    gap: 24px;
+    font-size: 12px;
+    margin-left: auto;
+    color: var(--dim);
+  }
+  .agg-state .kpi {
+    text-align: center;
+  }
+  .agg-state .kpi-value {
+    font-size: 18px;
+    font-weight: bold;
+    color: var(--text);
+  }
+  .agg-state .kpi-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Grid-Serving Storage — Live Dashboard</h1>
+<p class="subtitle">
+  Interoperability Profile Demo: Observe → Plan → Dispatch → Settle
+  <span id="connection-status" class="disconnected">disconnected</span>
+</p>
+
+<div class="phase-bar">
+  <div class="phase-step phase-observe" id="phase-observe">1. Observe</div>
+  <div class="phase-step phase-plan" id="phase-plan">2. Plan</div>
+  <div class="phase-step phase-dispatch" id="phase-dispatch">3. Dispatch</div>
+  <div class="phase-step phase-execute" id="phase-execute">4. Execute</div>
+  <div class="phase-step phase-settle" id="phase-settle">5. Settle</div>
+  <span class="phase-label" id="phase-detail"></span>
+</div>
+
+<div class="control-panel">
+  <label>Baseline Δ:</label>
+  <input type="range" id="obligation-kw" min="50" max="500" step="10" value="200">
+  <span class="value-display" id="obligation-display">Δ 200 kW</span>
+
+  <label>Direction:</label>
+  <select id="direction">
+    <option value="down">Down (reduce)</option>
+    <option value="up">Up (increase)</option>
+  </select>
+
+  <label>Source:</label>
+  <select id="source">
+    <option value="manual">Manual</option>
+    <option value="external_signal">External signal</option>
+    <option value="scheduled">Scheduled</option>
+  </select>
+
+  <button class="btn btn-dispatch" id="btn-dispatch" onclick="triggerDispatch()">Trigger Dispatch</button>
+  <button class="btn btn-release" id="btn-release" onclick="triggerRelease()" disabled>Release</button>
+
+  <div class="agg-state">
+    <div class="kpi">
+      <div class="kpi-value" id="kpi-backends">-</div>
+      <div class="kpi-label">Backends</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value" id="kpi-flex-down" style="color: var(--red)">-</div>
+      <div class="kpi-label">Flex Down</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value" id="kpi-flex-up" style="color: var(--green)">-</div>
+      <div class="kpi-label">Flex Up</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-value" id="kpi-phase" style="color: var(--cyan)">-</div>
+      <div class="kpi-label">Agg Phase</div>
+    </div>
+  </div>
+</div>
+
+<div class="alert alert-error" id="dispatch-error"></div>
+
+<div class="decision-panel" id="decision-panel" style="display:none;">
+  <h3>High-Level Decision</h3>
+  <div class="decision-summary" id="decision-summary"></div>
+  <table class="decision-table" id="decision-table"></table>
+  <div class="decision-rationale" id="decision-rationale"></div>
+</div>
+
+<div class="grid grid-3">
+  <div class="card" id="card-kern-01">
+    <h3>kern-01 — Residential (47 devices)</h3>
+    <canvas id="chart-kern-01" height="180"></canvas>
+    <div id="stats-kern-01" class="stat-rows"></div>
+  </div>
+  <div class="card" id="card-solar-02">
+    <h3>solar-02 — Commercial (12 devices)</h3>
+    <canvas id="chart-solar-02" height="180"></canvas>
+    <div id="stats-solar-02" class="stat-rows"></div>
+  </div>
+  <div class="card" id="card-flex-03">
+    <h3>flex-03 — Mixed (25 devices)</h3>
+    <canvas id="chart-flex-03" height="180"></canvas>
+    <div id="stats-flex-03" class="stat-rows"></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h3>Portfolio Energy</h3>
+    <canvas id="chart-energy" height="200"></canvas>
+  </div>
+  <div class="card">
+    <h3>Portfolio Flexibility</h3>
+    <canvas id="chart-portfolio" height="200"></canvas>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h3>Dispatch & Delivery</h3>
+    <canvas id="chart-dispatch" height="200"></canvas>
+  </div>
+
+<div class="grid">
+  <div class="card">
+    <h3>Event Log</h3>
+    <div class="event-log" id="event-log"></div>
+  </div>
+  <div class="card" id="conclusions-card" style="display:none;">
+    <h3>Conclusions</h3>
+    <div id="conclusions"></div>
+  </div>
+</div>
+
+<script>
+// ── Config ──
+const BROKER_URL = 'ws://localhost:9001';
+const AGG_ID = 'agg-01';
+const BACKENDS = ['kern-01', 'solar-02', 'flex-03'];
+const COLORS = {
+  'kern-01': { main: '#00bcd4', light: 'rgba(0,188,212,0.2)' },
+  'solar-02': { main: '#ffc107', light: 'rgba(255,193,7,0.2)' },
+  'flex-03': { main: '#e040fb', light: 'rgba(224,64,251,0.2)' },
+};
+const MAX_POINTS = 120;
+
+// ── State ──
+const state = {
+  phase: 'waiting',
+  snapshots: {},
+  flexOffers: {},
+  dispatches: {},
+  acks: {},
+  statuses: {},
+  deliveryReports: {},
+  dispatchTime: null,
+  releaseTime: null,
+};
+
+// ── Charts ──
+const chartDefaults = {
+  responsive: true,
+  animation: { duration: 300 },
+  scales: {
+    x: {
+      type: 'time',
+      time: { unit: 'second', displayFormats: { second: 'HH:mm:ss' } },
+      grid: { color: '#2a2d3a' },
+      ticks: { color: '#888', maxTicksLimit: 6 },
+    },
+    y: {
+      grid: { color: '#2a2d3a' },
+      ticks: { color: '#888' },
+    },
+  },
+  plugins: {
+    legend: { labels: { color: '#ccc', boxWidth: 12, font: { size: 11 } } },
+  },
+};
+
+// Per-backend power charts
+const backendCharts = {};
+BACKENDS.forEach(id => {
+  const ctx = document.getElementById(`chart-${id}`).getContext('2d');
+  backendCharts[id] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label: 'Net Power (kW)', borderColor: COLORS[id].main, backgroundColor: COLORS[id].light, fill: false, data: [], pointRadius: 0, borderWidth: 2 },
+        { label: 'Flex Down', borderColor: '#f44336', backgroundColor: 'rgba(244,67,54,0.1)', fill: '+1', data: [], pointRadius: 0, borderWidth: 1, borderDash: [4, 4] },
+        { label: 'Flex Up', borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.1)', fill: '-1', data: [], pointRadius: 0, borderWidth: 1, borderDash: [4, 4] },
+      ],
+    },
+    options: {
+      ...chartDefaults,
+      scales: {
+        ...chartDefaults.scales,
+        y: { ...chartDefaults.scales.y, title: { display: true, text: 'kW', color: '#888' } },
+      },
+      plugins: {
+        ...chartDefaults.plugins,
+        annotation: {},
+      },
+    },
+  });
+});
+
+// Portfolio energy chart (production vs consumption vs net)
+const energyCtx = document.getElementById('chart-energy').getContext('2d');
+const energyChart = new Chart(energyCtx, {
+  type: 'line',
+  data: {
+    datasets: [
+      { label: 'Production (kW)', borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.15)', fill: true, data: [], pointRadius: 0, borderWidth: 2 },
+      { label: 'Consumption (kW)', borderColor: '#f44336', backgroundColor: 'rgba(244,67,54,0.15)', fill: true, data: [], pointRadius: 0, borderWidth: 2 },
+      { label: 'Net Power (kW)', borderColor: '#2196f3', data: [], pointRadius: 0, borderWidth: 2, fill: false },
+    ],
+  },
+  options: {
+    ...chartDefaults,
+    scales: {
+      ...chartDefaults.scales,
+      y: { ...chartDefaults.scales.y, title: { display: true, text: 'kW', color: '#888' } },
+    },
+  },
+});
+
+// Portfolio chart
+const portfolioCtx = document.getElementById('chart-portfolio').getContext('2d');
+const portfolioChart = new Chart(portfolioCtx, {
+  type: 'line',
+  data: {
+    datasets: [
+      { label: 'Total Flex Down (kW)', borderColor: '#f44336', backgroundColor: 'rgba(244,67,54,0.15)', fill: true, data: [], pointRadius: 0, borderWidth: 2 },
+      { label: 'Total Flex Up (kW)', borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.15)', fill: true, data: [], pointRadius: 0, borderWidth: 2 },
+      { label: 'Requested Baseline Δ (kW)', borderColor: '#ffc107', borderDash: [8, 4], data: [], pointRadius: 0, borderWidth: 2, fill: false },
+    ],
+  },
+  options: {
+    ...chartDefaults,
+    scales: {
+      ...chartDefaults.scales,
+      y: { ...chartDefaults.scales.y, title: { display: true, text: 'kW', color: '#888' } },
+    },
+  },
+});
+
+// Dispatch chart
+const dispatchCtx = document.getElementById('chart-dispatch').getContext('2d');
+const dispatchChart = new Chart(dispatchCtx, {
+  type: 'bar',
+  data: {
+    labels: BACKENDS,
+    datasets: [
+      { label: 'Allocated (kW)', backgroundColor: 'rgba(255,193,7,0.7)', data: [0, 0, 0] },
+      { label: 'Accepted (kW)', backgroundColor: 'rgba(76,175,80,0.7)', data: [0, 0, 0] },
+      { label: 'Delivered (kW)', backgroundColor: 'rgba(33,150,243,0.7)', data: [0, 0, 0] },
+    ],
+  },
+  options: {
+    responsive: true,
+    animation: { duration: 500 },
+    scales: {
+      x: { grid: { color: '#2a2d3a' }, ticks: { color: '#888' } },
+      y: { grid: { color: '#2a2d3a' }, ticks: { color: '#888' }, title: { display: true, text: 'kW', color: '#888' } },
+    },
+    plugins: {
+      legend: { labels: { color: '#ccc', boxWidth: 12, font: { size: 11 } } },
+    },
+  },
+});
+
+// ── Helpers ──
+function addPoint(dataset, time, value) {
+  dataset.data.push({ x: time, y: value });
+  if (dataset.data.length > MAX_POINTS) dataset.data.shift();
+}
+
+function logEvent(cls, msg) {
+  const log = document.getElementById('event-log');
+  const ts = new Date().toLocaleTimeString();
+  log.innerHTML += `<div class="entry"><span class="ts">${ts}</span> <span class="${cls}">${msg}</span></div>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function setPhase(phase, detail) {
+  state.phase = phase;
+  ['observe', 'plan', 'dispatch', 'execute', 'settle'].forEach(p => {
+    const el = document.getElementById(`phase-${p}`);
+    el.classList.remove('active', 'done');
+  });
+  const phases = ['observe', 'plan', 'dispatch', 'execute', 'settle'];
+  const idx = phases.indexOf(phase);
+  for (let i = 0; i < idx; i++) document.getElementById(`phase-${phases[i]}`).classList.add('done');
+  if (idx >= 0) document.getElementById(`phase-${phase}`).classList.add('active');
+  document.getElementById('phase-detail').textContent = detail || '';
+}
+
+function updateStats(backendId) {
+  const el = document.getElementById(`stats-${backendId}`);
+  const snap = state.snapshots[backendId];
+  const offer = state.flexOffers[backendId];
+  const ack = state.acks[backendId];
+  if (!snap && !offer) return;
+
+  let html = '';
+  if (snap) {
+    html += `<div class="stat-row"><span class="stat-label">Net Power</span><span class="stat-value">${snap.power.net_kw.toFixed(1)} kW</span></div>`;
+    html += `<div class="stat-row"><span class="stat-label">Production</span><span class="stat-value positive">${snap.power.production_kw.toFixed(1)} kW</span></div>`;
+    html += `<div class="stat-row"><span class="stat-label">Consumption</span><span class="stat-value negative">${snap.power.consumption_kw.toFixed(1)} kW</span></div>`;
+    html += `<div class="stat-row"><span class="stat-label">Devices</span><span class="stat-value">${snap.device_count}</span></div>`;
+  }
+  if (offer) {
+    html += `<div class="stat-row"><span class="stat-label">Flex Down</span><span class="stat-value negative">${offer.envelope.flex_down_kw.toFixed(0)} kW</span></div>`;
+    html += `<div class="stat-row"><span class="stat-label">Flex Up</span><span class="stat-value positive">${offer.envelope.flex_up_kw.toFixed(0)} kW</span></div>`;
+    html += `<div class="stat-row"><span class="stat-label">Confidence</span><span class="stat-value">${(offer.envelope.confidence * 100).toFixed(0)}%</span></div>`;
+    html += `<div class="stat-row"><span class="stat-label">Reliability</span><span class="stat-value">${(offer.reliability.score * 100).toFixed(0)}%</span></div>`;
+  }
+  if (ack) {
+    const color = ack.status === 'accepted' ? 'positive' : 'negative';
+    html += `<div class="stat-row"><span class="stat-label">ACK</span><span class="stat-value ${color}">${ack.status} (${ack.accepted_delta_kw.toFixed(0)} kW)</span></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function showConclusions() {
+  const card = document.getElementById('conclusions-card');
+  card.style.display = 'block';
+  const el = document.getElementById('conclusions');
+
+  const dispatched = BACKENDS.filter(id => (state.dispatches[id]?.target_delta_kw || 0) > 0.1);
+  const skipped = BACKENDS.filter(id => !dispatched.includes(id));
+  const totalAlloc = dispatched.reduce((s, id) => s + (state.dispatches[id]?.target_delta_kw || 0), 0);
+  const totalAccepted = Object.values(state.acks).reduce((s, a) => s + a.accepted_delta_kw, 0);
+  const reports = Object.values(state.deliveryReports);
+  const totalDel = reports.reduce((s, r) => s + r.total_delivered_kwh, 0);
+  const totalReq = reports.reduce((s, r) => s + r.total_requested_kwh, 0);
+  const ratio = totalReq > 0 ? (totalDel / totalReq * 100).toFixed(1) : '—';
+
+  el.innerHTML = `
+    <div class="conclusion-item"><span class="conclusion-num">1</span><span><b>Two-level MILP:</b> Aggregator allocated ${totalAlloc.toFixed(0)}kW across ${dispatched.length}/${BACKENDS.length} backends. Each backend independently distributed to its devices.</span></div>
+    <div class="conclusion-item"><span class="conclusion-num">2</span><span><b>Reliability-weighted:</b> ${skipped.length > 0 ? skipped.join(', ') + ' skipped despite capacity — lower reliability score.' : 'All backends dispatched.'}</span></div>
+    <div class="conclusion-item"><span class="conclusion-num">3</span><span><b>Prosumer sovereignty:</b> Requested ${totalAlloc.toFixed(0)}kW, accepted ${totalAccepted.toFixed(0)}kW — devices at SoC limits opted out via OpenADR.</span></div>
+    <div class="conclusion-item"><span class="conclusion-num">4</span><span><b>Delivery verified:</b> ${ratio}% overall delivery ratio. Feeds back into reliability scores.</span></div>
+    <div class="conclusion-item"><span class="conclusion-num">5</span><span><b>Privacy maintained:</b> Aggregator never saw per-device data — only backend-level aggregates.</span></div>
+  `;
+}
+
+// ── Decision Panel ──
+function showDecisionPanel() {
+  const panel = document.getElementById('decision-panel');
+  const dispatchCount = Object.keys(state.dispatches).length;
+  if (dispatchCount === 0) return;
+
+  panel.style.display = 'block';
+
+  // Gather per-backend data
+  const rows = BACKENDS.map(id => {
+    const offer = state.flexOffers[id];
+    const dispatch = state.dispatches[id];
+    const ack = state.acks[id];
+    const available = offer
+      ? (dispatch?.direction === 'up' ? offer.envelope.flex_up_kw : offer.envelope.flex_down_kw)
+      : 0;
+    const confidence = offer ? offer.envelope.confidence : 0;
+    const reliability = offer ? offer.reliability.score : 0;
+    const firmCapacity = available * confidence;
+    const allocated = dispatch ? dispatch.target_delta_kw : 0;
+    return { id, available, confidence, reliability, firmCapacity, allocated, ack, dispatch };
+  });
+
+  // Baseline delta from slider
+  const firstDispatch = Object.values(state.dispatches)[0];
+  const baselineDelta = firstDispatch ? (parseFloat(document.getElementById('obligation-kw').value) || 200) : 200;
+  const direction = firstDispatch?.direction || 'down';
+  const dirLabel = direction === 'down' ? 'reduction' : 'increase';
+  const source = firstDispatch?.reason || 'manual';
+  const totalAllocated = rows.reduce((s, r) => s + r.allocated, 0);
+  const totalAvailable = rows.reduce((s, r) => s + r.available, 0);
+  const totalFirm = rows.reduce((s, r) => s + r.firmCapacity, 0);
+  const dispatched = rows.filter(r => r.allocated > 0.1);
+  const skipped = rows.filter(r => r.allocated <= 0.1 && r.available > 0);
+
+  // Summary
+  document.getElementById('decision-summary').innerHTML =
+    `<strong>Requested baseline Δ:</strong> ${baselineDelta.toFixed(0)} kW ${dirLabel} (source: ${source})` +
+    ` · <strong>MILP result:</strong> ${totalAllocated.toFixed(0)} kW allocated across ${dispatched.length}/${rows.length} backends` +
+    (skipped.length > 0 ? ` · <strong>${skipped.map(r => r.id).join(', ')}</strong> skipped despite capacity` : '');
+
+  // Table
+  const maxAlloc = Math.max(...rows.map(r => r.allocated), 1);
+  let tableHtml = `<tr>
+    <th>Backend</th><th>Reliability</th><th>Confidence</th>
+    <th style="text-align:right">Available</th><th style="text-align:right">Firm Cap.</th>
+    <th style="text-align:right">Allocated</th><th></th><th>Status</th>
+  </tr>`;
+
+  rows.forEach(r => {
+    const relPct = (r.reliability * 100).toFixed(0);
+    const relColor = r.reliability >= 0.9 ? 'var(--green)' : r.reliability >= 0.7 ? 'var(--yellow)' : 'var(--red)';
+    const confPct = (r.confidence * 100).toFixed(0);
+    const barWidth = Math.round((r.allocated / maxAlloc) * 80);
+    const barColor = r.allocated > 0.1 ? 'var(--yellow)' : 'var(--border)';
+
+    let statusTag = '';
+    if (r.ack) {
+      if (r.ack.status === 'accepted') statusTag = `<span class="decision-tag tag-accepted">ACCEPTED ${r.ack.accepted_delta_kw.toFixed(0)}kW</span>`;
+      else if (r.ack.status === 'partially_accepted') statusTag = `<span class="decision-tag tag-partial">PARTIAL ${r.ack.accepted_delta_kw.toFixed(0)}kW</span>`;
+      else statusTag = `<span class="decision-tag tag-rejected">REJECTED</span>`;
+    } else if (r.allocated > 0.1) {
+      statusTag = `<span class="decision-tag tag-dispatched">DISPATCHED</span>`;
+    } else if (r.available > 0) {
+      statusTag = `<span class="decision-tag tag-skipped">SKIPPED</span>`;
+    } else {
+      statusTag = `<span style="color:var(--dim)">—</span>`;
+    }
+
+    tableHtml += `<tr>
+      <td style="font-weight:bold">${r.id}</td>
+      <td><span style="color:${relColor}">${relPct}%</span></td>
+      <td>${confPct}%</td>
+      <td class="num">${r.available.toFixed(0)} kW</td>
+      <td class="num">${r.firmCapacity.toFixed(0)} kW</td>
+      <td class="num" style="color:var(--yellow)">${r.allocated > 0.1 ? r.allocated.toFixed(0) + ' kW' : '—'}</td>
+      <td><span class="decision-bar" style="width:${barWidth}px;background:${barColor}"></span></td>
+      <td>${statusTag}</td>
+    </tr>`;
+  });
+
+  // Totals row
+  const totalAccepted = Object.values(state.acks).reduce((s, a) => s + a.accepted_delta_kw, 0);
+  const hasAcks = Object.keys(state.acks).length > 0;
+  tableHtml += `<tr style="font-weight:bold;border-top:1px solid var(--dim)">
+    <td>TOTAL</td><td></td><td></td>
+    <td class="num">${totalAvailable.toFixed(0)} kW</td>
+    <td class="num">${totalFirm.toFixed(0)} kW</td>
+    <td class="num" style="color:var(--yellow)">${totalAllocated.toFixed(0)} / ${baselineDelta.toFixed(0)} kW</td>
+    <td></td>
+    <td>${hasAcks ? '<span style="color:var(--green)">' + totalAccepted.toFixed(0) + ' kW accepted</span>' : ''}</td>
+  </tr>`;
+
+  document.getElementById('decision-table').innerHTML = tableHtml;
+
+  // Rationale
+  const sortedByRel = [...rows].filter(r => r.available > 0).sort((a, b) => b.reliability - a.reliability);
+  const bestRel = sortedByRel[0];
+  const worstRel = sortedByRel[sortedByRel.length - 1];
+
+  let rationale = `<span class="label">MILP objective:</span> minimize dispatch cost weighted by unreliability (1 − reliability + 0.01) · allocated_kW<br>`;
+  rationale += `<span class="label">Constraints:</span> meet ≥95% of requested baseline Δ; per-backend ≤ confidence × available capacity<br>`;
+  if (bestRel && worstRel && bestRel.id !== worstRel.id) {
+    rationale += `<span class="label">Effect:</span> ${bestRel.id} (${(bestRel.reliability*100).toFixed(0)}% reliable) costs ${(1 - bestRel.reliability + 0.01).toFixed(2)}/kW vs. ${worstRel.id} (${(worstRel.reliability*100).toFixed(0)}%) at ${(1 - worstRel.reliability + 0.01).toFixed(2)}/kW — solver prefers reliable backends`;
+  }
+  if (skipped.length > 0) {
+    rationale += `<br><span class="label">Skipped:</span> ${skipped.map(r => r.id + ' (' + (r.reliability*100).toFixed(0) + '%)').join(', ')} — baseline Δ met without them due to higher cost`;
+  }
+
+  document.getElementById('decision-rationale').innerHTML = rationale;
+}
+
+function hideDecisionPanel() {
+  document.getElementById('decision-panel').style.display = 'none';
+}
+
+// ── MQTT ──
+const client = mqtt.connect(BROKER_URL);
+
+client.on('connect', () => {
+  document.getElementById('connection-status').textContent = 'connected';
+  document.getElementById('connection-status').className = 'connected';
+  logEvent('observe', 'Connected to MQTT broker');
+  setPhase('observe', 'Waiting for backend data...');
+
+  client.subscribe(`${AGG_ID}/observe/+/state`);
+  client.subscribe(`${AGG_ID}/observe/+/flex`);
+  client.subscribe(`${AGG_ID}/dispatch/+/request`);
+  client.subscribe(`${AGG_ID}/dispatch/+/ack/+`);
+  client.subscribe(`${AGG_ID}/dispatch/+/status/+`);
+  client.subscribe(`${AGG_ID}/dispatch/+/release`);
+  client.subscribe(`${AGG_ID}/settle/+/+`);
+  client.subscribe(`${AGG_ID}/state/portfolio`);
+});
+
+client.on('close', () => {
+  document.getElementById('connection-status').textContent = 'disconnected';
+  document.getElementById('connection-status').className = 'disconnected';
+});
+
+client.on('message', (topic, message) => {
+  const payload = message.toString();
+  if (!payload) return;
+
+  let data;
+  try { data = JSON.parse(payload); } catch { return; }
+  const now = new Date();
+
+  // ── Observe: SiteStateSnapshot ──
+  if (topic.includes('/observe/') && topic.endsWith('/state')) {
+    const id = data.site_id;
+    state.snapshots[id] = data;
+    if (state.phase === 'waiting') setPhase('observe', 'Receiving backend state...');
+
+    const chart = backendCharts[id];
+    if (chart) {
+      addPoint(chart.data.datasets[0], now, data.power.net_kw);
+      chart.update('none');
+    }
+
+    // Update portfolio energy chart
+    let totalProd = 0, totalCons = 0, totalNet = 0;
+    BACKENDS.forEach(bid => {
+      const s = state.snapshots[bid];
+      if (s) { totalProd += s.power.production_kw; totalCons += s.power.consumption_kw; totalNet += s.power.net_kw; }
+    });
+    addPoint(energyChart.data.datasets[0], now, totalProd);
+    addPoint(energyChart.data.datasets[1], now, totalCons);
+    addPoint(energyChart.data.datasets[2], now, totalNet);
+    energyChart.update('none');
+
+    updateStats(id);
+  }
+
+  // ── Observe: SiteFlexOffer ──
+  else if (topic.includes('/observe/') && topic.endsWith('/flex')) {
+    const id = data.site_id;
+    state.flexOffers[id] = data;
+
+    const chart = backendCharts[id];
+    if (chart) {
+      const baseline = data.envelope.baseline_kw;
+      addPoint(chart.data.datasets[1], now, baseline - data.envelope.flex_down_kw);
+      addPoint(chart.data.datasets[2], now, baseline + data.envelope.flex_up_kw);
+      chart.update('none');
+    }
+
+    // Update portfolio chart
+    let totalDown = 0, totalUp = 0;
+    BACKENDS.forEach(bid => {
+      const o = state.flexOffers[bid];
+      if (o) { totalDown += o.envelope.flex_down_kw; totalUp += o.envelope.flex_up_kw; }
+    });
+    addPoint(portfolioChart.data.datasets[0], now, totalDown);
+    addPoint(portfolioChart.data.datasets[1], now, totalUp);
+    addPoint(portfolioChart.data.datasets[2], now, parseInt(document.getElementById('obligation-kw').value));
+    portfolioChart.update('none');
+
+    updateStats(id);
+    logEvent('observe', `${id}: flex ↓${data.envelope.flex_down_kw.toFixed(0)}kW ↑${data.envelope.flex_up_kw.toFixed(0)}kW (${(data.envelope.confidence*100).toFixed(0)}%)`);
+  }
+
+  // ── Dispatch: AggregatorDispatch ──
+  else if (topic.includes('/dispatch/') && topic.includes('/request')) {
+    const id = data.site_id;
+    state.dispatches[id] = data;
+    state.dispatchTime = now;
+    setPhase('dispatch', `Dispatching ${data.target_delta_kw.toFixed(0)}kW to ${id}`);
+    logEvent('dispatch', `→ ${id}: Δ${data.target_delta_kw.toFixed(0)}kW ${data.direction}`);
+
+    // Update dispatch bar chart
+    const idx = BACKENDS.indexOf(id);
+    if (idx >= 0) {
+      dispatchChart.data.datasets[0].data[idx] = data.target_delta_kw;
+      dispatchChart.update();
+    }
+
+    // Add vertical line annotation to backend chart
+    const chart = backendCharts[id];
+    if (chart) {
+      const borderColor = '#ffc107';
+      chart.data.datasets[0].data.push({ x: now, y: null });
+    }
+
+    // Highlight card
+    const card = document.getElementById(`card-${id}`);
+    if (card) { card.style.borderColor = '#ffc107'; card.style.borderWidth = '2px'; }
+
+    // Show/update decision panel
+    showDecisionPanel();
+  }
+
+  // ── Dispatch: DispatchAck ──
+  else if (topic.includes('/dispatch/') && topic.includes('/ack/')) {
+    const id = data.site_id;
+    state.acks[id] = data;
+    logEvent('dispatch', `ACK ${id}: ${data.status} (${data.accepted_delta_kw.toFixed(0)}kW)`);
+
+    const idx = BACKENDS.indexOf(id);
+    if (idx >= 0) {
+      dispatchChart.data.datasets[1].data[idx] = data.accepted_delta_kw;
+      dispatchChart.update();
+    }
+    updateStats(id);
+
+    // Update decision panel with ack status
+    showDecisionPanel();
+  }
+
+  // ── Execute: FlexStatus ──
+  else if (topic.includes('/dispatch/') && topic.includes('/status/')) {
+    const id = data.site_id;
+    state.statuses[id] = data;
+    if (state.phase === 'dispatch') setPhase('execute', 'Devices executing flex...');
+    logEvent('execute', `${id}: ${data.total_actual_power_kw.toFixed(0)}kW active, SoC ${data.avg_soc_percent.toFixed(0)}%`);
+  }
+
+  // ── Release ──
+  else if (topic.includes('/dispatch/') && topic.includes('/release')) {
+    state.releaseTime = now;
+    setPhase('settle', 'Collecting delivery reports...');
+    logEvent('settle', `Release sent for ${data.dispatch_id}`);
+  }
+
+  // ── Settle: DeliveryReport ──
+  else if (topic.includes('/settle/')) {
+    const id = data.site_id;
+    state.deliveryReports[id] = data;
+    logEvent('settle', `${id}: delivered ${(data.delivery_ratio*100).toFixed(1)}% (${data.total_delivered_kwh.toFixed(2)}/${data.total_requested_kwh.toFixed(2)} kWh)`);
+
+    const idx = BACKENDS.indexOf(id);
+    if (idx >= 0) {
+      // Show delivery as average power (kWh / hours ~ kW equivalent)
+      dispatchChart.data.datasets[2].data[idx] = data.total_delivered_kwh > 0
+        ? (state.dispatches[id]?.target_delta_kw || 0) * data.delivery_ratio
+        : 0;
+      dispatchChart.update();
+    }
+
+    // Update card border
+    const card = document.getElementById(`card-${id}`);
+    if (card) {
+      card.style.borderColor = data.delivery_ratio >= 0.9 ? '#4caf50' : '#ffc107';
+    }
+
+    // Show conclusions when all reports are in
+    const reportCount = Object.keys(state.deliveryReports).length;
+    const dispatchCount = Object.values(state.dispatches).filter(d => d.target_delta_kw > 0.1).length;
+    if (reportCount >= dispatchCount && dispatchCount > 0) {
+      showConclusions();
+    }
+  }
+
+  // ── Aggregator State ──
+  else if (topic.includes('/state/portfolio')) {
+    document.getElementById('kpi-backends').textContent = data.backends_online || '-';
+    document.getElementById('kpi-flex-down').textContent =
+      data.total_flex_down_kw ? `${data.total_flex_down_kw.toFixed(0)}kW` : '-';
+    document.getElementById('kpi-flex-up').textContent =
+      data.total_flex_up_kw ? `${data.total_flex_up_kw.toFixed(0)}kW` : '-';
+    document.getElementById('kpi-phase').textContent = data.phase || '-';
+
+    // Update button states
+    const hasDispatch = data.dispatch_id != null;
+    document.getElementById('btn-dispatch').disabled = hasDispatch;
+    document.getElementById('btn-release').disabled = !hasDispatch;
+  }
+});
+
+// ── Obligation slider ──
+const slider = document.getElementById('obligation-kw');
+const display = document.getElementById('obligation-display');
+function updateSliderDisplay() {
+  const kw = parseInt(slider.value);
+  const dir = document.getElementById('direction').value;
+  let totalAvailable = 0;
+  BACKENDS.forEach(id => {
+    const o = state.flexOffers[id];
+    if (o) totalAvailable += (dir === 'up' ? o.envelope.flex_up_kw : o.envelope.flex_down_kw);
+  });
+  display.textContent = `Δ ${kw} kW`;
+  display.style.color = (totalAvailable > 0 && kw > totalAvailable) ? 'var(--red)' : 'var(--yellow)';
+  // Clear error when slider changes
+  document.getElementById('dispatch-error').style.display = 'none';
+}
+slider.addEventListener('input', updateSliderDisplay);
+document.getElementById('direction').addEventListener('change', updateSliderDisplay);
+
+// ── Control functions ──
+function triggerDispatch() {
+  const obligationKw = parseInt(document.getElementById('obligation-kw').value);
+  const direction = document.getElementById('direction').value;
+  const source = document.getElementById('source').value;
+  const errorEl = document.getElementById('dispatch-error');
+  errorEl.style.display = 'none';
+
+  // Check available capacity
+  let totalAvailable = 0;
+  BACKENDS.forEach(id => {
+    const o = state.flexOffers[id];
+    if (o) totalAvailable += (direction === 'up' ? o.envelope.flex_up_kw : o.envelope.flex_down_kw);
+  });
+
+  if (totalAvailable < 1) {
+    errorEl.textContent = `Cannot dispatch: no flex ${direction} capacity available across any backend.`;
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  if (obligationKw > totalAvailable) {
+    errorEl.textContent = `Requested Δ ${obligationKw} kW ${direction} exceeds available capacity of ${totalAvailable.toFixed(0)} kW. Reduce the baseline Δ or change direction.`;
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  const payload = JSON.stringify({
+    obligation_kw: obligationKw,
+    direction: direction,
+    reason: source,
+    segment_id: 'seg-LA-0142',
+  });
+
+  client.publish(`${AGG_ID}/command/dispatch`, payload, { qos: 1 });
+  logEvent('dispatch', `COMMAND: baseline Δ ${obligationKw}kW ${direction} (${source})`);
+  setPhase('plan', `MILP optimizing for ${obligationKw}kW ${direction}...`);
+
+  document.getElementById('btn-dispatch').disabled = true;
+  document.getElementById('btn-release').disabled = false;
+
+  // Reset dispatch bar chart
+  dispatchChart.data.datasets.forEach(ds => ds.data = [0, 0, 0]);
+  dispatchChart.update();
+
+  // Reset card borders
+  BACKENDS.forEach(id => {
+    const card = document.getElementById(`card-${id}`);
+    if (card) { card.style.borderColor = ''; card.style.borderWidth = ''; }
+  });
+
+  // Hide old conclusions and decision panel
+  document.getElementById('conclusions-card').style.display = 'none';
+  hideDecisionPanel();
+  state.dispatches = {};
+  state.acks = {};
+  state.deliveryReports = {};
+}
+
+function triggerRelease() {
+  client.publish(`${AGG_ID}/command/release`, '', { qos: 1 });
+  logEvent('settle', 'COMMAND: release');
+  setPhase('settle', 'Collecting delivery reports...');
+
+  document.getElementById('btn-dispatch').disabled = false;
+  document.getElementById('btn-release').disabled = true;
+}
+
+</script>
+</body>
+</html>

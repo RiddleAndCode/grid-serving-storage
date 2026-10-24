@@ -3,3 +3,6 @@ pulp>=2.7
 rich>=13.0
 numpy
 highspy
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27

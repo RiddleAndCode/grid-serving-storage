@@ -1,11 +1,93 @@
-# Mosquitto MQTT broker for the grid-serving storage demo.
-# If you already have a broker on localhost:1883 (e.g. from hems project),
-# skip this and just run the demo scripts directly.
+# Grid-Serving Storage Demo — Docker Compose
+#
+# Runs all entities as separate containers communicating via MQTT.
+#
+# Usage:
+#   docker compose up --build        # start everything
+#   docker compose up --build -d     # detached
+#   docker compose logs -f           # follow all logs
+#   docker compose logs -f aggregator  # follow one service
+#
+# The browser dashboard connects via websockets on port 9001.
+# Open demo/dashboard.html in your browser.
+
 services:
+  # ── MQTT Broker ──
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
       - "1883:1883"
+      - "9001:9001"
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/#' -C 1 -W 2 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  # ── HEMS Backends (one container per backend) ──
+  backend-kern-01:
+    build: ./demo
+    command: python backend_simulator.py --backend-id kern-01 --broker mosquitto --vtn-url http://openadr-vtn:8088
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      openadr-vtn:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend-solar-02:
+    build: ./demo
+    command: python backend_simulator.py --backend-id solar-02 --broker mosquitto
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend-flex-03:
+    build: ./demo
+    command: python backend_simulator.py --backend-id flex-03 --broker mosquitto
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── OpenADR 3.1 VTN (device-facing interface of HEMS Backend) ──
+  openadr-vtn:
+    build: ./demo
+    command: python openadr_vtn.py --port 8088
+    ports:
+      - "8088:8088"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import httpx; httpx.get('http://localhost:8088/')\" || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ── OpenADR 3.1 VEN (simulated HEMS device) ──
+  openadr-ven:
+    build: ./demo
+    command: python openadr_ven.py --vtn-url http://openadr-vtn:8088 --ven-name demo-hems-ven
+    depends_on:
+      openadr-vtn:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Technical Aggregator ──
+  aggregator:
+    build: ./demo
+    command: python aggregator.py --mode continuous --broker mosquitto
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      backend-kern-01:
+        condition: service_started
+      backend-solar-02:
+        condition: service_started
+      backend-flex-03:
+        condition: service_started
     restart: unless-stopped
