@@ -1,0 +1,11 @@
+# Mosquitto MQTT broker for the grid-serving storage demo.
+# If you already have a broker on localhost:1883 (e.g. from hems project),
+# skip this and just run the demo scripts directly.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped

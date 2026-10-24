@@ -1,0 +1,5 @@
+paho-mqtt>=2.0
+pulp>=2.7
+rich>=13.0
+numpy
+highspy
