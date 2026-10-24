@@ -32,45 +32,73 @@ The HEMS Backend is the **protocol bridge**: it speaks MQTT upstream (to the agg
 
 ### Topic Structure
 
+The topic structure supports both the continuous observation phase (bottom-up) and the dispatch phase (top-down):
+
 ```
-flex/
-└── {aggregator_id}/
-    └── {segment_id}/
-        ├── request                    ← Aggregator publishes FlexRequest
-        ├── response/
-        │   └── {backend_id}           ← Backend publishes FlexResponse
-        ├── status/
-        │   └── {backend_id}           ← Backend publishes FlexStatus (periodic)
-        └── release                    ← Aggregator publishes FlexRelease
+{aggregator_id}/
+├── observe/
+│   └── {backend_id}/
+│       ├── state                      ← Backend publishes SiteStateSnapshot
+│       └── flex                       ← Backend publishes SiteFlexOffer
+├── dispatch/
+│   └── {segment_id}/
+│       ├── request                    ← Aggregator publishes AggregatorDispatch
+│       ├── ack/
+│       │   └── {backend_id}           ← Backend publishes DispatchAck
+│       ├── status/
+│       │   └── {backend_id}           ← Backend publishes FlexStatus (periodic)
+│       └── release                    ← Aggregator publishes FlexRelease
+└── settle/
+    └── {backend_id}/
+        └── {dispatch_id}             ← Backend publishes DeliveryReport
 ```
 
 ### Topic Examples
 
-| Purpose | Topic | Publisher | Subscriber |
-|---|---|---|---|
-| Flex request | `flex/agg-01/seg-LA-0142/request` | Aggregator | All backends with devices in segment |
-| Backend response | `flex/agg-01/seg-LA-0142/response/kern-backend-01` | HEMS Backend | Aggregator |
-| Backend status | `flex/agg-01/seg-LA-0142/status/kern-backend-01` | HEMS Backend | Aggregator |
-| Event release | `flex/agg-01/seg-LA-0142/release` | Aggregator | All backends with devices in segment |
+| Purpose | Topic | Publisher | Subscriber | Phase |
+|---|---|---|---|---|
+| Site state | `agg-01/observe/kern-backend-01/state` | HEMS Backend | Aggregator | Observe |
+| Flex offer | `agg-01/observe/kern-backend-01/flex` | HEMS Backend | Aggregator | Observe |
+| Dispatch goal | `agg-01/dispatch/seg-LA-0142/request` | Aggregator | Backends in segment | Dispatch |
+| Dispatch ack | `agg-01/dispatch/seg-LA-0142/ack/kern-backend-01` | HEMS Backend | Aggregator | Dispatch |
+| Execution status | `agg-01/dispatch/seg-LA-0142/status/kern-backend-01` | HEMS Backend | Aggregator | Dispatch |
+| Release | `agg-01/dispatch/seg-LA-0142/release` | Aggregator | Backends in segment | Dispatch |
+| Delivery report | `agg-01/settle/kern-backend-01/dsp-001` | HEMS Backend | Aggregator | Settle |
 
 ### Backend Subscription
 
-On onboarding, each HEMS Backend subscribes to segment topics for all grid segments where it has devices:
+On onboarding, each HEMS Backend subscribes to:
 ```
-flex/{aggregator_id}/+/request
-flex/{aggregator_id}/+/release
+# Dispatch signals for all segments (filter locally)
+{aggregator_id}/dispatch/+/request
+{aggregator_id}/dispatch/+/release
 ```
 
-Using MQTT wildcard `+` for segment_id, so the backend receives requests for all segments. The backend filters locally for segments where it actually has devices.
+The aggregator subscribes to:
+```
+# All observation data from all backends
+{aggregator_id}/observe/+/state
+{aggregator_id}/observe/+/flex
+
+# All dispatch responses
+{aggregator_id}/dispatch/+/ack/+
+{aggregator_id}/dispatch/+/status/+
+
+# All settlement reports
+{aggregator_id}/settle/+/+
+```
 
 ### QoS & Delivery
 
-| Message Type | QoS | Retained | Message Expiry | Rationale |
-|---|---|---|---|---|
-| FlexRequest | 1 (at-least-once) | No | = duration_min × 60s | Stale requests must not activate devices |
-| FlexResponse | 1 (at-least-once) | No | 120s | Aggregator needs timely response |
-| FlexStatus | 0 (at-most-once) | No | 60s | Informational; loss tolerable |
-| FlexRelease | 1 (at-least-once) | No | 300s | Must reach backends; device-side timer as backup |
+| Message Type | Phase | QoS | Retained | Message Expiry | Rationale |
+|---|---|---|---|---|---|
+| SiteStateSnapshot | Observe | 0 (at-most-once) | Yes (latest) | 300s | Periodic; latest state is what matters. Retained so new subscribers get current state |
+| SiteFlexOffer | Observe | 1 (at-least-once) | Yes (latest) | = valid_until | Flex offers expire; retained for aggregator reconnection |
+| AggregatorDispatch | Dispatch | 1 (at-least-once) | No | = schedule duration | Stale dispatches must not activate devices |
+| DispatchAck | Dispatch | 1 (at-least-once) | No | 120s | Aggregator needs timely response |
+| FlexStatus | Dispatch | 0 (at-most-once) | No | 60s | Informational; loss tolerable |
+| FlexRelease | Dispatch | 1 (at-least-once) | No | 300s | Must reach backends; device-side timer as backup |
+| DeliveryReport | Settle | 1 (at-least-once) | No | 3600s | Settlement data; must arrive but not time-critical |
 
 ### MQTT v5 Features
 
@@ -159,18 +187,28 @@ For the Grid-Serving Storage use case, HEMS devices (VENs) must support:
 
 ## Protocol Bridge: HEMS Backend
 
-The HEMS Backend is the key integration point. It must:
+The HEMS Backend is the key integration point, operating in both directions:
 
-1. **Receive** MQTT FlexRequest from aggregator
-2. **Translate** to OpenADR `oadrDistributeEvent` for each device in the segment
-3. **Collect** OpenADR `oadrCreatedEvent` responses from devices
-4. **Aggregate** device responses into an aggregated FlexResponse
-5. **Publish** aggregated FlexResponse on MQTT
-6. **Periodically collect** OpenADR reports from devices
-7. **Publish** aggregated FlexStatus on MQTT
-8. **Receive** MQTT FlexRelease and translate to OpenADR event cancellation
+**Bottom-up (Observe phase)**:
+1. **Collect** OpenADR reports (TELEMETRY_USAGE, TELEMETRY_STATUS) from managed HEMS devices
+2. **Aggregate** device data into site-level SiteStateSnapshot (power, energy, grid quality)
+3. **Compute** SiteFlexOffer from device capabilities — flexibility envelope, constraints, forecast (learned from device ramp behavior)
+4. **Publish** SiteStateSnapshot and SiteFlexOffer on MQTT
 
-This bridge logic is **manufacturer-specific** — each HEMS vendor implements it in their backend. The profile standardizes the MQTT and OpenADR interfaces on either side.
+**Top-down (Dispatch phase)**:
+1. **Receive** AggregatorDispatch from aggregator via MQTT (direction, target delta, schedule)
+2. **Run Backend MILP** to distribute the requested delta across managed devices (respecting per-device SoC, ramps, user preferences)
+3. **Translate** per-device goals to OpenADR `oadrDistributeEvent` for each HEMS device
+4. **Collect** OpenADR `oadrCreatedEvent` responses from devices
+5. **Aggregate** device responses into DispatchAck and publish on MQTT
+6. **Periodically collect** OpenADR reports during execution and publish aggregated FlexStatus on MQTT
+7. **Receive** FlexRelease and translate to OpenADR event cancellation
+
+**Settlement**:
+1. **Generate** DeliveryReport from device metering data (requested vs. actual per slot)
+2. **Publish** DeliveryReport on MQTT
+
+This bridge logic is **manufacturer-specific** — each HEMS vendor implements it in their backend, including their own MILP or optimization approach for device-level dispatch. The profile standardizes the MQTT and OpenADR interfaces on either side.
 
 ---
 

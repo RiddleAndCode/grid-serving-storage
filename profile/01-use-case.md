@@ -16,33 +16,84 @@ Per the Smart Grids Austria system architecture for flexible assets (see `../cha
 - **The critical interface** is between HEMS Backends and the Technical Aggregator
 
 ```
-DSO ──signals grid stress──▶ Technical Aggregator ──flex-request──▶ HEMS Backend ──OpenADR──▶ HEMS Device
-                                                   ◀──flex-response──             ◀──report──
+                    ┌──── Observe (continuous) ────┐
+                    │                               │
+HEMS Device ──state──▶ HEMS Backend ──aggregated──▶ Technical Aggregator
+                                      state+flex      │
+                    ┌──── Dispatch (on demand) ────┘
+                    │
+Technical Aggregator ──goals──▶ HEMS Backend ──device goals──▶ HEMS Device
+     (MILP)                       (MILP)
+                    │
+                    └──── Settle (post-event) ─────▶ DeliveryReport
 ```
+
+## Interaction Model: Observe → Plan → Dispatch → Settle
+
+The system operates as a **continuous four-phase loop**, not just event-driven activation:
+
+### Phase 1 — Observe (Continuous, Bottom-Up)
+
+HEMS devices report their state to their HEMS Backend. Each HEMS Backend aggregates across its managed devices and publishes to the Technical Aggregator:
+
+- **Current state**: consumption, production, SoC, grid import/export
+- **Flexibility potentials**: how much the site can flex up or down (in kW), measured and learned from the ramp behavior of locally managed devices
+- **Constraints**: ramp rates (up/down), activation lead time, min/max duration, rebound characteristics
+- **Forecast**: 24h flexibility forecast per time slot with confidence levels
+
+This gives the aggregator a continuously updated picture of what each HEMS Backend (and by extension, each cluster of devices) can deliver.
+
+### Phase 2 — Plan (Aggregator-Internal)
+
+The Technical Aggregator uses the observed state and flex offers from all HEMS Backends to plan its market interactions:
+
+- **Portfolio assessment**: What is my total available flexibility (up and down)?
+- **Market positioning**: Which markets can I serve with this portfolio? (mFRR, intraday, congestion, flex markets)
+- **Optimization**: The aggregator runs a **MILP (Mixed-Integer Linear Program)** to determine optimal dispatch across backends — respecting per-backend constraints, ramp rates, rebound effects, reliability scores, and market obligations
+- **Dispatch plan**: The MILP output is a set of goals (up/down deltas per time slot) for each HEMS Backend
+
+### Phase 3 — Dispatch (On Demand, Top-Down)
+
+When market obligations or grid signals require activation:
+
+1. The **Aggregator** sends dispatch goals to each relevant HEMS Backend — direction (up/down), target delta in kW, and a time-series schedule of setpoints
+2. Each **HEMS Backend** receives its goal and runs its own **MILP** to distribute the requested delta across its managed HEMS devices — respecting per-device SoC, ramp limits, hardware constraints, and prosumer preferences
+3. Each **HEMS Device** receives its individual goal, evaluates locally, and accepts (fully or partially) or rejects
+4. The **HEMS Backend** aggregates device responses and acknowledges the dispatch to the aggregator
+
+### Phase 4 — Settle (Post-Event)
+
+After dispatch completes:
+
+1. Each **HEMS Backend** generates a delivery report: what was requested vs. what was actually delivered (per time slot)
+2. The **Aggregator** verifies delivery against metering data and updates reliability scores
+3. Settlement with DSO/market counterparties based on verified delivery
 
 ## Use Case Narrative
 
-### Normal Operation
+### Normal Operation (Observe Phase Active)
 
-A prosumer operates their battery storage system according to their own preferences — typically maximizing self-consumption of PV generation. The HEMS (Home Energy Management System) controls charge/discharge cycles locally. Neither the aggregator nor the DSO are involved in normal operation.
+A prosumer operates their battery storage system according to their own preferences — typically maximizing self-consumption of PV generation. The HEMS controls charge/discharge cycles locally.
 
-### Grid Stress Event
+**Even during normal operation**, the HEMS reports its state to the HEMS Backend, which continuously publishes aggregated state snapshots and flexibility offers to the Technical Aggregator. The aggregator observes but does not intervene — it uses the data to assess portfolio capacity and plan market positions.
 
-1. The **DSO's grid monitoring system** detects an emerging overload in a distribution grid segment (e.g., voltage rise from excess PV feed-in, or transformer overload from simultaneous high consumption).
+### Grid Stress Event (Full Cycle)
 
-2. The **DSO signals the grid situation** to the Technical Aggregator (via their established interface — outside this profile's scope). The signal identifies the affected grid segment and the type of relief needed.
+1. The **DSO** detects an emerging overload and signals the Technical Aggregator.
+2. The **Aggregator** — already aware of current flexibility from continuous observation — runs its MILP to determine optimal dispatch across HEMS Backends for the affected grid segment.
+3. The **Aggregator** sends dispatch goals (up/down) to relevant HEMS Backends.
+4. Each **HEMS Backend** runs its own MILP to distribute the goal across managed HEMS devices, respecting per-device constraints.
+5. **HEMS devices** execute within accepted bounds, reporting actual delivery back up the chain.
+6. On resolution, the aggregator releases the dispatch. Delivery reports are generated for settlement.
 
-3. The **Technical Aggregator** determines which HEMS backends manage devices in the affected segment. It sends a **flex-request** to the relevant HEMS backends via MQTT, specifying direction (charge/discharge/hold), maximum power, and duration.
+### Market Participation (Full Cycle)
 
-4. Each **HEMS Backend** forwards the flex-request to its managed HEMS devices via **OpenADR** (as VEN-VTN communication). The HEMS device evaluates the request against local constraints (state of charge, user preferences, safety limits).
-
-5. The **HEMS device** adjusts storage operation within accepted bounds and reports actual delivery back to the HEMS Backend (via OpenADR reports), which aggregates and forwards to the Technical Aggregator (via MQTT).
-
-6. When the grid situation normalizes, the aggregator publishes a **release signal**. HEMS devices return to normal prosumer-controlled operation.
+1. The **Aggregator** continuously observes portfolio flex capacity and positions in wholesale/balancing markets.
+2. When a market commitment triggers (mFRR activation, intraday position, flex market clearing), the aggregator dispatches accordingly — same Phase 3/4 as above.
 
 ### Post-Event
 
-The aggregator logs the event and actual flex delivered for settlement with the DSO and compensation to prosumers/HEMS operators.
+The aggregator settles with market counterparties and updates backend reliability scores. These scores feed back into future MILP planning (unreliable backends receive less dispatch).
 
 ## Triggers
 

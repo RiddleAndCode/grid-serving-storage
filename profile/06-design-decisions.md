@@ -124,7 +124,60 @@ Key decisions made in this interoperability profile and their rationale.
 
 **Consequence**: The profile must accommodate heterogeneous device capabilities (small residential batteries vs. large commercial storage). The flex-request/response pattern handles this naturally — each device reports what it can deliver, regardless of size.
 
-## D10: Tier 2 Scope — mFRR and Congestion as Primary Markets
+## D10: Four-Phase Interaction Model (Observe → Plan → Dispatch → Settle)
+
+**Decision**: The system operates as a **continuous four-phase loop**, not purely event-driven activation.
+
+**Alternatives considered**:
+- Pure event-driven (aggregator sends flex-requests only when triggered)
+- Continuous control (aggregator permanently steers devices)
+
+**Rationale**:
+- **Observe phase** (continuous, bottom-up) gives the aggregator an always-current picture of portfolio capacity — enabling proactive market positioning, not just reactive grid relief
+- **Plan phase** (aggregator-internal) allows optimization before any dispatch — the aggregator can position in markets knowing what it can actually deliver
+- **Dispatch phase** (on demand, top-down) activates flex only when needed — preserving prosumer sovereignty during normal operation
+- **Settle phase** (post-event) closes the loop with verified delivery — enabling reliability scoring that feeds back into future planning
+
+**Consequence**: The MQTT interface must support both continuous observation messages (SiteStateSnapshot, SiteFlexOffer) and event-driven dispatch messages (AggregatorDispatch, DispatchAck, FlexRelease). The topic structure reflects this split (`observe/` vs. `dispatch/` vs. `settle/`).
+
+## D11: Bottom-Up Observation (SiteStateSnapshot + SiteFlexOffer)
+
+**Decision**: HEMS Backends continuously publish **SiteStateSnapshot** (current state) and **SiteFlexOffer** (flexibility envelope with constraints) to the aggregator, even when no dispatch is active.
+
+**Alternatives considered**:
+- On-demand polling (aggregator queries backends when needed)
+- State reporting only during active dispatch events
+- Device-level reporting to aggregator
+
+**Rationale**:
+- **Proactive market positioning**: The aggregator needs an always-current picture of portfolio capacity to bid into markets (mFRR, intraday) before activation triggers arrive
+- **Learned flexibility**: flex_up/flex_down potentials are measured and learned from actual device ramp behavior — not nameplate capacity. This requires continuous observation
+- **MILP readiness**: The aggregator MILP needs per-backend envelopes, constraints, forecasts, and reliability scores as inputs. These must be available before any dispatch decision
+- **Backend as abstraction layer**: The backend aggregates device-level data into a site-level view — the aggregator sees flexibility envelopes, not individual batteries
+
+**Consequence**: The MQTT topic structure includes an `observe/` subtree for continuous bottom-up messages. SiteStateSnapshot is published at QoS 0 with retained flag (latest state). SiteFlexOffer at QoS 1 with expiry matching `valid_until`.
+
+## D12: Two-Level Hierarchical Optimization (MILP)
+
+**Decision**: Optimization happens at **two levels** — the aggregator optimizes across backends, each backend optimizes across its devices. Both are anticipated to use MILP (Mixed-Integer Linear Programming).
+
+**Alternatives considered**:
+- Single-level optimization (aggregator optimizes down to device level)
+- No optimization (simple proportional dispatch based on capacity)
+- Rule-based dispatch (priority queues, round-robin)
+
+**Rationale**:
+- **Privacy**: The aggregator never sees per-device data. It treats each backend as an opaque flexibility envelope with constraints.
+- **Scalability**: Aggregator solves for N backends (handful to dozens), not N×M devices (thousands). Each backend solves for its own M devices independently.
+- **Autonomy**: Each manufacturer's backend knows its devices best — heterogeneous device models, firmware versions, local conditions. The backend MILP can exploit this knowledge.
+- **Separation of concerns**: The aggregator optimizes the portfolio (market obligations, fairness, reliability). The backend optimizes device dispatch (SoC management, ramp rates, user preferences).
+- **MILP specifically** fits because the problem has linear constraints (power bounds, ramp rates, connection limits) with integer decisions (device on/off, minimum activation duration).
+
+**Consequence**: The SiteFlexOffer must provide enough information for the aggregator MILP (envelope, constraints, forecast, reliability) without exposing per-device details. The AggregatorDispatch must be expressed as a goal (direction + delta_kw + schedule) that the backend can decompose freely.
+
+**Note**: MILP is the anticipated optimization method but the profile does not mandate it. Any optimization approach that respects the observed constraints and produces valid dispatch goals is compliant.
+
+## D13: Tier 2 Scope — mFRR and Congestion as Primary Markets
 
 **Decision**: The profile targets **Tier 2** (event-driven flex, 12.5–15 min response time) as its primary operating range. **Tier 1** (FCR, aFRR) is explicitly out of scope. **Tier 3** (day-ahead, intraday, flex markets) is naturally reachable with the same stack.
 
@@ -136,12 +189,12 @@ Key decisions made in this interoperability profile and their rationale.
 **Rationale**:
 - **Tier 1 requires SCADA/PLC hardware** (e.g., Beckhoff TwinCAT, Siemens S7) with deterministic sub-second to 4-second control loops — fundamentally incompatible with cloud-mediated HEMS backends
 - **mFRR's 12.5 min FAT** (ENTSO-E standard, APG compliant) provides ~12 minutes of headroom after the ~5–10 second signal chain — comfortable for opt-in/opt-out negotiation and retry logic
-- **The FlexRequest/FlexResponse cycle is market-agnostic** — the same message flow serves congestion management, mFRR, intraday trading, and flex market activation. Only the upstream trigger differs
+- **The dispatch cycle is market-agnostic** — the same message flow serves congestion management, mFRR, intraday trading, and flex market activation. Only the upstream trigger differs
 - **One protocol pair, many markets** — avoids the complexity of maintaining separate stacks per market product
 
 **Consequence**: The profile does not address FCR or aFRR. Aggregators serving those markets need a parallel SCADA-based architecture. The MQTT + OpenADR stack covers mFRR, congestion management, nFAS (P-based), intraday, day-ahead, and emerging flex markets.
 
-## D11: Protocol Fitness Across Markets
+## D14: Protocol Fitness Across Markets
 
 **Decision**: The dual-protocol stack (MQTT upstream + OpenADR downstream) is validated as a **general-purpose flexibility activation stack**, not just a congestion management tool.
 
@@ -194,5 +247,8 @@ See `../protocol-analysis-mqtt-vs-openadr.md` for the full protocol fitness anal
 | D7 | Failure mode | Fail-safe to prosumer control | Safety + regulatory compliance |
 | D8 | Addressing | Grid segment ID | Topological grid problem, DSO-defined |
 | D9 | HEMS scope | Segment-agnostic (residential to commercial) | Challenge scope + interface-level design |
-| D10 | Market scope | Tier 2 primary (mFRR, congestion), Tier 3 reachable | Tier 1 needs SCADA; HEMS backends serve Tier 2+ |
-| D11 | Protocol-market fitness | One stack, many markets | FlexRequest cycle is market-agnostic; only trigger differs |
+| D10 | Interaction model | Four-phase loop (Observe → Plan → Dispatch → Settle) | Continuous observation enables proactive market positioning |
+| D11 | Observation messages | SiteStateSnapshot + SiteFlexOffer (bottom-up) | Aggregator needs always-current portfolio picture |
+| D12 | Optimization | Two-level hierarchical MILP | Privacy + scalability + manufacturer autonomy |
+| D13 | Market scope | Tier 2 primary (mFRR, congestion), Tier 3 reachable | Tier 1 needs SCADA; HEMS backends serve Tier 2+ |
+| D14 | Protocol-market fitness | One stack, many markets | Dispatch cycle is market-agnostic; only trigger differs |
