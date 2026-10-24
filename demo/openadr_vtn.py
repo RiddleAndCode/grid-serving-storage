@@ -46,43 +46,6 @@ _DEFAULT_PROGRAMS = [
         "programType": "FLEX_READINESS",
         "country": "AT",
         "description": "Flex readiness reporting: VEN submits status, capability, and forecast reports",
-        "reportDescriptors": [
-            {
-                "payloadType": "OPERATING_STATE",
-                "readingType": "DIRECT_READ",
-                "targets": [{"type": "RESOURCE_NAME", "values": ["all"]}],
-            },
-            {
-                "payloadType": "READING",
-                "readingType": "DIRECT_READ",
-                "units": "KW",
-                "targets": [{"type": "RESOURCE_NAME", "values": ["all"]}],
-            },
-            {
-                "payloadType": "STORAGE_CHARGE_LEVEL",
-                "readingType": "DIRECT_READ",
-                "units": "PERCENT",
-                "targets": [{"type": "RESOURCE_NAME", "values": ["all"]}],
-            },
-            {
-                "payloadType": "LOAD_SHED_DELTA_AVAILABLE",
-                "readingType": "DIRECT_READ",
-                "units": "KW",
-                "targets": [{"type": "RESOURCE_NAME", "values": ["all"]}],
-            },
-            {
-                "payloadType": "STORAGE_USABLE_CAPACITY",
-                "readingType": "DIRECT_READ",
-                "units": "KWH",
-                "targets": [{"type": "RESOURCE_NAME", "values": ["all"]}],
-            },
-            {
-                "payloadType": "STORAGE_MAX_DISCHARGE_POWER",
-                "readingType": "DIRECT_READ",
-                "units": "KW",
-                "targets": [{"type": "RESOURCE_NAME", "values": ["all"]}],
-            },
-        ],
     },
     {
         "id": "prg-grid-capacity",
@@ -106,7 +69,129 @@ def _init_programs():
         programs[p["id"]] = p
 
 
+def _init_default_events():
+    """Seed standing events that external VENs can poll at startup."""
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = (today + timedelta(days=1)).isoformat(timespec="seconds")
+    now_iso = now.isoformat(timespec="seconds")
+
+    default_events = [
+        # ── Report request: status every 5 min, per resource ──
+        {
+            "id": "evt-status-and-flex-per-resource",
+            "programID": "prg-flex-readiness",
+            "eventName": "status-and-flex-per-resource",
+            "priority": 10,
+            "intervalPeriod": {"start": now_iso, "duration": "PT5M"},
+            "reportDescriptors": [
+                {"payloadType": "OPERATING_STATE", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "DATA_QUALITY", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "READING", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "LOAD_SHED_DELTA_AVAILABLE", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "STORAGE_CHARGE_LEVEL", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "STORAGE_USABLE_CAPACITY", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "STORAGE_MAX_CHARGE_POWER", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "STORAGE_MAX_DISCHARGE_POWER", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
+            ],
+        },
+        # ── Report request: 24h forecast, hourly ──
+        {
+            "id": "evt-site-forecast",
+            "programID": "prg-flex-readiness",
+            "eventName": "site-forecast",
+            "priority": 10,
+            "intervalPeriod": {"start": now_iso, "duration": "PT1H"},
+            "reportDescriptors": [
+                {"payloadType": "USAGE_FORECAST", "units": "KWH", "readingType": "FORECAST", "aggregate": True,
+                 "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "LOAD_SHED_DELTA_AVAILABLE", "units": "KW", "readingType": "FORECAST", "aggregate": True,
+                 "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "STORAGE_DISPATCH_FORECAST", "units": "KW", "readingType": "FORECAST", "aggregate": True,
+                 "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
+                {"payloadType": "STORAGE_CHARGE_LEVEL", "readingType": "FORECAST", "aggregate": True,
+                 "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
+            ],
+        },
+        # ── Day-ahead prices (24 hourly slots, simulated) ──
+        {
+            "id": "evt-day-ahead-prices",
+            "programID": "prg-awattar-spot",
+            "eventName": f"day-ahead-{(today + timedelta(days=1)).strftime('%Y-%m-%d')}",
+            "priority": 10,
+            "payloadDescriptors": [
+                {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "PRICE", "units": "KWH", "currency": "EUR"},
+                {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "SIMPLE"},
+            ],
+            "intervalPeriod": {"start": tomorrow_start, "duration": "PT1H"},
+            "intervals": _generate_price_intervals(),
+        },
+        # ── Default import capacity limit (standing, low priority) ──
+        {
+            "id": "evt-default-import-limit",
+            "programID": "prg-grid-capacity",
+            "eventName": "default-import-limit",
+            "priority": 100,
+            "payloadDescriptors": [
+                {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "IMPORT_CAPACITY_LIMIT", "units": "KW"},
+            ],
+            "intervalPeriod": {"start": now_iso, "duration": "P9999Y"},
+            "intervals": [{"id": 0, "payloads": [{"type": "IMPORT_CAPACITY_LIMIT", "values": [8.0]}]}],
+        },
+        # ── Default export capacity limit (standing, low priority) ──
+        {
+            "id": "evt-default-export-limit",
+            "programID": "prg-grid-capacity",
+            "eventName": "default-export-limit",
+            "priority": 100,
+            "payloadDescriptors": [
+                {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "EXPORT_CAPACITY_LIMIT", "units": "KW"},
+            ],
+            "intervalPeriod": {"start": now_iso, "duration": "P9999Y"},
+            "intervals": [{"id": 0, "payloads": [{"type": "EXPORT_CAPACITY_LIMIT", "values": [3.0]}]}],
+        },
+    ]
+
+    for evt in default_events:
+        evt.setdefault("createdDateTime", now.isoformat(timespec="seconds"))
+        evt.setdefault("modificationDateTime", now.isoformat(timespec="seconds"))
+        events[evt["id"]] = evt
+
+
+def _generate_price_intervals() -> list[dict]:
+    """Generate 24 hourly price intervals with realistic Austrian day-ahead shape."""
+    import random as _rnd
+    # Typical Austrian autumn price curve (€/kWh): low overnight, peaks at 8h and 18h
+    base_prices = [
+        0.08, 0.07, 0.06, 0.06, 0.07, 0.09,   # 00–05: overnight low
+        0.12, 0.16, 0.19, 0.17, 0.15, 0.14,     # 06–11: morning ramp + peak
+        0.13, 0.12, 0.13, 0.15, 0.18, 0.22,     # 12–17: midday dip, evening ramp
+        0.24, 0.20, 0.16, 0.13, 0.10, 0.08,     # 18–23: evening peak, wind down
+    ]
+    intervals = []
+    for h, base in enumerate(base_prices):
+        price = round(base + _rnd.uniform(-0.01, 0.01), 4)
+        # SIMPLE: 0=cheap, 1=normal, 2=expensive, 3=critical
+        if price < 0.09:
+            simple = 0
+        elif price < 0.15:
+            simple = 1
+        elif price < 0.20:
+            simple = 2
+        else:
+            simple = 3
+        intervals.append({
+            "id": h,
+            "payloads": [
+                {"type": "PRICE", "values": [price]},
+                {"type": "SIMPLE", "values": [simple]},
+            ],
+        })
+    return intervals
+
+
 _init_programs()
+_init_default_events()
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
@@ -139,6 +224,12 @@ def _verify_token(authorization: str = Header(None)) -> str:
         del tokens[token]
         raise HTTPException(401, "Token expired")
     return info["client_id"]
+
+
+@app.get("/auth/server")
+def auth_server():
+    """OAuth 2.0 server discovery (OpenADR 3.1 §6.2)."""
+    return {"tokenURL": "/auth/token"}
 
 
 @app.post("/auth/token", response_model=TokenResponse)
