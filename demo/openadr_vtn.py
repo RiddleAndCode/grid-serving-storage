@@ -72,9 +72,12 @@ def _init_programs():
 def _init_default_events():
     """Seed standing events that external VENs can poll at startup."""
     now = datetime.now(timezone.utc)
-    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_iso = today_midnight.isoformat(timespec="seconds")
     now_iso = now.isoformat(timespec="seconds")
-    price_intervals = _generate_price_intervals()
+    price_intervals, price_start = _generate_price_intervals()
+    tomorrow = today_midnight + timedelta(days=1)
+    tomorrow_iso = tomorrow.isoformat(timespec="seconds")
 
     default_events = [
         # ── Report request: status every 5 min, per resource ──
@@ -82,17 +85,13 @@ def _init_default_events():
             "id": "evt-status-and-flex-per-resource",
             "programID": "prg-flex-readiness",
             "eventName": "status-and-flex-per-resource",
-            "priority": 10,
-            "intervalPeriod": {"start": now_iso, "duration": "PT5M"},
+            "duration": "P9999Y",
+            "intervalPeriod": {"start": today_iso, "duration": "PT5M"},
             "reportDescriptors": [
                 {"payloadType": "OPERATING_STATE", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
                 {"payloadType": "DATA_QUALITY", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
                 {"payloadType": "READING", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
                 {"payloadType": "LOAD_SHED_DELTA_AVAILABLE", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
-                {"payloadType": "STORAGE_CHARGE_LEVEL", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
-                {"payloadType": "STORAGE_USABLE_CAPACITY", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
-                {"payloadType": "STORAGE_MAX_CHARGE_POWER", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
-                {"payloadType": "STORAGE_MAX_DISCHARGE_POWER", "startInterval": 0, "numIntervals": 1, "historical": False, "frequency": 1, "repeat": -1},
             ],
         },
         # ── Report request: 24h forecast, hourly ──
@@ -100,16 +99,12 @@ def _init_default_events():
             "id": "evt-site-forecast",
             "programID": "prg-flex-readiness",
             "eventName": "site-forecast",
-            "priority": 10,
-            "intervalPeriod": {"start": now_iso, "duration": "PT1H"},
+            "duration": "P9999Y",
+            "intervalPeriod": {"start": today_iso, "duration": "PT1H"},
             "reportDescriptors": [
                 {"payloadType": "USAGE_FORECAST", "units": "KWH", "readingType": "FORECAST", "aggregate": True,
                  "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
                 {"payloadType": "LOAD_SHED_DELTA_AVAILABLE", "units": "KW", "readingType": "FORECAST", "aggregate": True,
-                 "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
-                {"payloadType": "STORAGE_DISPATCH_FORECAST", "units": "KW", "readingType": "FORECAST", "aggregate": True,
-                 "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
-                {"payloadType": "STORAGE_CHARGE_LEVEL", "readingType": "FORECAST", "aggregate": True,
                  "startInterval": -1, "numIntervals": 24, "historical": False, "frequency": 1, "repeat": -1},
             ],
         },
@@ -117,13 +112,13 @@ def _init_default_events():
         {
             "id": "evt-day-ahead-prices",
             "programID": "prg-awattar-spot",
-            "eventName": f"day-ahead-{today.strftime('%Y-%m-%d')}",
+            "eventName": f"day-ahead-{tomorrow.strftime('%Y-%m-%d')}",
             "priority": 10,
             "payloadDescriptors": [
                 {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "PRICE", "units": "KWH", "currency": "EUR"},
                 {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "SIMPLE"},
             ],
-            "intervalPeriod": {"start": now_iso, "duration": "PT1H"},
+            "intervalPeriod": {"start": price_start, "duration": "PT1H"},
             "intervals": price_intervals,
         },
         # ── Default import capacity limit (standing, low priority) ──
@@ -158,23 +153,28 @@ def _init_default_events():
         events[evt["id"]] = evt
 
 
-def _fetch_awattar_prices() -> list[dict] | None:
+def _fetch_awattar_prices() -> tuple[list[dict], str] | None:
     """Fetch day-ahead prices from the aWATTar AT API.
 
-    Returns OpenADR 3.1 intervals or None if the API is unavailable.
+    Returns (intervals, delivery_start_iso) or None if unavailable.
     API returns prices in €/MWh — we convert to €/kWh for the VEN.
+    Intervals use sequential id as offset from the event-level intervalPeriod.
     """
     import httpx as _httpx
     try:
         now = datetime.now(timezone.utc)
-        # Request from now through end of tomorrow
-        tomorrow_end = (now.replace(hour=0, minute=0, second=0, microsecond=0)
-                        + timedelta(days=2))
+        # CET midnight = 23:00 UTC previous day → start of delivery day
+        today_cet_midnight = now.replace(hour=23, minute=0, second=0, microsecond=0)
+        if today_cet_midnight > now:
+            today_cet_midnight -= timedelta(days=1)
+        tomorrow_cet_midnight = today_cet_midnight + timedelta(days=1)
+        end = tomorrow_cet_midnight + timedelta(days=1)
+
         resp = _httpx.get(
             "https://api.awattar.at/v1/marketdata",
             params={
-                "start": int(now.timestamp() * 1000),
-                "end": int(tomorrow_end.timestamp() * 1000),
+                "start": int(tomorrow_cet_midnight.timestamp() * 1000),
+                "end": int(end.timestamp() * 1000),
             },
             timeout=10,
         )
@@ -182,6 +182,12 @@ def _fetch_awattar_prices() -> list[dict] | None:
         data = resp.json().get("data", [])
         if not data:
             return None
+
+        # Delivery start = first interval's start
+        first_start_ms = data[0]["start_timestamp"]
+        delivery_start = datetime.fromtimestamp(
+            first_start_ms / 1000, tz=timezone.utc
+        ).isoformat(timespec="seconds")
 
         intervals = []
         for i, entry in enumerate(data):
@@ -198,31 +204,32 @@ def _fetch_awattar_prices() -> list[dict] | None:
             else:
                 simple = 3  # critical
 
-            start_ms = entry["start_timestamp"]
-            start_iso = datetime.fromtimestamp(
-                start_ms / 1000, tz=timezone.utc
-            ).isoformat(timespec="seconds")
-
             intervals.append({
                 "id": i,
-                "intervalPeriod": {"start": start_iso, "duration": "PT1H"},
                 "payloads": [
                     {"type": "PRICE", "values": [price_kwh]},
                     {"type": "SIMPLE", "values": [simple]},
                 ],
             })
 
-        log.info(f"Fetched {len(intervals)} hourly prices from aWATTar AT API")
-        return intervals
+        log.info(f"Fetched {len(intervals)} hourly prices from aWATTar AT API (start={delivery_start})")
+        return intervals, delivery_start
 
     except Exception as e:
         log.warning(f"aWATTar API unavailable ({e}), using simulated prices")
         return None
 
 
-def _generate_simulated_prices() -> list[dict]:
+def _generate_simulated_prices() -> tuple[list[dict], str]:
     """Fallback: generate 24 hourly prices with realistic Austrian day-ahead shape."""
     import random as _rnd
+    # Delivery starts at CET midnight = 23:00 UTC today
+    now = datetime.now(timezone.utc)
+    tomorrow_cet = now.replace(hour=23, minute=0, second=0, microsecond=0)
+    if tomorrow_cet <= now:
+        tomorrow_cet += timedelta(days=1)
+    delivery_start = tomorrow_cet.isoformat(timespec="seconds")
+
     base_prices = [
         0.08, 0.07, 0.06, 0.06, 0.07, 0.09,   # 00–05: overnight low
         0.12, 0.16, 0.19, 0.17, 0.15, 0.14,     # 06–11: morning ramp + peak
@@ -247,10 +254,10 @@ def _generate_simulated_prices() -> list[dict]:
                 {"type": "SIMPLE", "values": [simple]},
             ],
         })
-    return intervals
+    return intervals, delivery_start
 
 
-def _generate_price_intervals() -> list[dict]:
+def _generate_price_intervals() -> tuple[list[dict], str]:
     """Try real aWATTar prices, fall back to simulated."""
     return _fetch_awattar_prices() or _generate_simulated_prices()
 
