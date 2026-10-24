@@ -25,6 +25,7 @@ from config import (
     AGGREGATOR_ID, BACKENDS, MQTT_BROKER, MQTT_PORT,
     SEGMENT_ID, SNAPSHOT_INTERVAL_S, FLEX_OFFER_INTERVAL_S,
     STATUS_INTERVAL_S, DISPATCH_DURATION_S,
+    PV_SCALE, CONS_SCALE,
     TOPIC_STATE, TOPIC_FLEX, TOPIC_DISPATCH, TOPIC_ACK,
     TOPIC_STATUS, TOPIC_RELEASE, TOPIC_SETTLE,
 )
@@ -59,14 +60,14 @@ class HEMSBackend:
     def _init_devices(self):
         """Create simulated devices with randomized but realistic state."""
         for i in range(self.cfg["device_count"]):
-            peak_pv = self.cfg["avg_pv_kw"] * random.uniform(0.7, 1.3) if self.cfg["has_pv"] else 0
+            peak_pv = self.cfg["avg_pv_kw"] * PV_SCALE * random.uniform(0.7, 1.3) if self.cfg["has_pv"] else 0
             dev = SimulatedDevice(
                 device_id=f"{self.id}-dev-{i:03d}",
                 battery_kw=self.cfg["avg_battery_kw"] * random.uniform(0.7, 1.3),
                 battery_kwh=self.cfg["avg_battery_kwh"] * random.uniform(0.8, 1.2),
                 soc_percent=random.uniform(25, 90),
                 pv_kw=max(0.0, peak_pv * random.uniform(0.3, 0.9)),
-                consumption_kw=max(0.2, random.uniform(0.5, 4.0)),
+                consumption_kw=max(0.2, random.uniform(0.5, 4.0) * CONS_SCALE),
                 online=random.random() > 0.05,  # 95% online
                 min_soc=random.uniform(15, 25),
                 max_soc=random.uniform(90, 98),
@@ -196,7 +197,7 @@ class HEMSBackend:
 
             # PV: gentle random walk around current value
             if self.cfg["has_pv"]:
-                peak_pv = self.cfg["avg_pv_kw"]
+                peak_pv = self.cfg["avg_pv_kw"] * PV_SCALE
                 dev.pv_kw += random.uniform(-0.3, 0.3) * peak_pv * 0.1
                 dev.pv_kw = max(0.0, min(peak_pv * 1.3, dev.pv_kw))
             else:
@@ -204,7 +205,7 @@ class HEMSBackend:
 
             # Consumption: gentle random walk
             dev.consumption_kw += random.uniform(-0.2, 0.2)
-            dev.consumption_kw = max(0.2, min(5.0, dev.consumption_kw))
+            dev.consumption_kw = max(0.2, min(5.0 * CONS_SCALE, dev.consumption_kw))
 
             # SoC drifts based on net power
             if dev.pv_kw > dev.consumption_kw:

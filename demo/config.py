@@ -12,6 +12,12 @@ STATUS_INTERVAL_S = 2.0
 OBSERVATION_WINDOW_S = 15.0  # How long to observe before triggering dispatch
 DISPATCH_DURATION_S = 20.0   # How long a dispatch event lasts in demo
 
+# Energy profile scaling (adjusts PV output and consumption levels)
+#   PV_SCALE:   1.0 = full rated output, 0.4 = overcast/autumn, 0.15 = winter
+#   CONS_SCALE: 1.0 = baseline, 1.3 = autumn (heating), 1.6 = winter (heavy heating)
+PV_SCALE = 0.4
+CONS_SCALE = 1.3
+
 # Simulated grid obligation
 GRID_OBLIGATION_KW = 200.0   # "Reduce 200 kW in segment"
 GRID_OBLIGATION_DIRECTION = "down"
