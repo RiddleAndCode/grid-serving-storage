@@ -112,7 +112,7 @@ def _init_default_events():
         {
             "id": "evt-day-ahead-prices",
             "programID": "prg-awattar-spot",
-            "eventName": f"day-ahead-{tomorrow.strftime('%Y-%m-%d')}",
+            "eventName": f"day-ahead-{today_midnight.strftime('%Y-%m-%d')}",
             "priority": 10,
             "payloadDescriptors": [
                 {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "PRICE", "units": "KWH", "currency": "EUR"},
@@ -163,17 +163,17 @@ def _fetch_awattar_prices() -> tuple[list[dict], str] | None:
     import httpx as _httpx
     try:
         now = datetime.now(timezone.utc)
-        # CET midnight = 23:00 UTC previous day → start of delivery day
+        # CET midnight = 23:00 UTC previous day → start of today's delivery day
         today_cet_midnight = now.replace(hour=23, minute=0, second=0, microsecond=0)
         if today_cet_midnight > now:
             today_cet_midnight -= timedelta(days=1)
-        tomorrow_cet_midnight = today_cet_midnight + timedelta(days=1)
-        end = tomorrow_cet_midnight + timedelta(days=1)
+        # Fetch today's 24h + tomorrow's 24h
+        end = today_cet_midnight + timedelta(days=2)
 
         resp = _httpx.get(
             "https://api.awattar.at/v1/marketdata",
             params={
-                "start": int(tomorrow_cet_midnight.timestamp() * 1000),
+                "start": int(today_cet_midnight.timestamp() * 1000),
                 "end": int(end.timestamp() * 1000),
             },
             timeout=10,
@@ -223,12 +223,12 @@ def _fetch_awattar_prices() -> tuple[list[dict], str] | None:
 def _generate_simulated_prices() -> tuple[list[dict], str]:
     """Fallback: generate 24 hourly prices with realistic Austrian day-ahead shape."""
     import random as _rnd
-    # Delivery starts at CET midnight = 23:00 UTC today
+    # Delivery starts at today's CET midnight = 23:00 UTC yesterday
     now = datetime.now(timezone.utc)
-    tomorrow_cet = now.replace(hour=23, minute=0, second=0, microsecond=0)
-    if tomorrow_cet <= now:
-        tomorrow_cet += timedelta(days=1)
-    delivery_start = tomorrow_cet.isoformat(timespec="seconds")
+    today_cet = now.replace(hour=23, minute=0, second=0, microsecond=0)
+    if today_cet > now:
+        today_cet -= timedelta(days=1)
+    delivery_start = today_cet.isoformat(timespec="seconds")
 
     base_prices = [
         0.08, 0.07, 0.06, 0.06, 0.07, 0.09,   # 00–05: overnight low
