@@ -2,9 +2,24 @@
 
 ## Overview
 
-The grid-serving storage process follows six steps. The architecture has two distinct communication segments:
+The grid-serving storage process follows seven steps. The architecture has two distinct communication segments:
 - **Aggregator ↔ HEMS Backend**: MQTT v5
 - **HEMS Backend ↔ HEMS Device**: OpenADR 2.0b (VTN ↔ VEN)
+
+**This process flow applies identically across all serviceable markets.** Whether the trigger is a DSO congestion signal, an mFRR activation from APG, an intraday market position, or a local flexibility market clearing — the FlexRequest → FlexResponse → FlexStatus → FlexRelease message cycle is the same. Only the trigger (Step 1) and the upstream market interface differ.
+
+### Timing Context
+
+The architecture operates in **Tier 2** (event-driven flex) with the following timing budget:
+
+| Market | Available Response Time | Signal Chain (~5–10s) | Headroom |
+|---|---|---|---|
+| **mFRR** | 12.5 min (FAT) | ~10s | ~12 min |
+| **Congestion management** | Minutes (DSO-dependent) | ~10s | Minutes |
+| **Intraday** | ≥5 min (gate closure) | ~10s | Minutes |
+| **Day-ahead** | Hours | ~10s | Hours |
+
+Tier 1 markets (FCR: 30s, aFRR: 5 min with 4s setpoint cycle) cannot be served through this process — they require dedicated SCADA/PLC control loops that bypass the HEMS backend stack.
 
 ## Sequence Diagram
 
@@ -65,15 +80,23 @@ The grid-serving storage process follows six steps. The architecture has two dis
 
 ## Step Details
 
-### Step 1 — DSO Signals Grid Stress to Aggregator
+### Step 1 — Trigger: Market or Grid Signal to Aggregator
 
-**Actor**: DSO → Technical Aggregator
+**Actor**: DSO / TSO / Market Platform → Technical Aggregator
 
-**Interface**: Existing DSO ↔ Aggregator market interface (outside this profile's scope)
+**Interface**: Existing market interfaces (outside this profile's scope)
 
-**Content**: The DSO communicates the affected grid segment, type of congestion (overvoltage, overload), and the type of relief needed (increase consumption / reduce feed-in).
+**Trigger sources** (same process from Step 2 onward):
 
-**Note**: This interface already exists in Austrian market processes. Our profile begins at Step 2.
+| Source | Signal | Example |
+|---|---|---|
+| **DSO** | Grid congestion signal | Overvoltage in segment seg-LA-0142 from excess PV feed-in |
+| **TSO (APG)** | mFRR activation | Tertiary reserve call, 12.5 min FAT, quarter-hourly delivery |
+| **Intraday market** | Cleared position | Aggregator committed 500 kW discharge for 14:00–14:15 interval |
+| **Flex market platform** | Activation after clearing | Local flexibility market (NODES/Equigy) cleared a bid in segment |
+| **Aggregator internal** | Preventive forecast | Grid-aware forecasting predicts congestion in 30 min |
+
+**Note**: These upstream interfaces already exist in Austrian market processes. Our profile begins at Step 2 — the activation flow is market-agnostic.
 
 ### Step 2 — Aggregator Publishes Flex-Request via MQTT
 

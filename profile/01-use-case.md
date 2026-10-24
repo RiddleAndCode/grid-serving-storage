@@ -47,14 +47,42 @@ The aggregator logs the event and actual flex delivered for settlement with the 
 ## Triggers
 
 - DSO signals grid congestion to aggregator (voltage, transformer loading, forecast)
-- Aggregator's own market participation (balancing energy, redispatch)
+- TSO/APG activates mFRR (tertiary balancing reserve) — aggregator dispatches pool
+- Aggregator's own market participation (intraday trading, day-ahead scheduling)
+- Local flexibility market clearing — aggregator activates contracted flex
 - Preventive activation based on aggregator's grid-aware forecasting
+
+## Serviceable Markets
+
+This use case and its dual-protocol architecture (MQTT + OpenADR) serve multiple energy markets and grid services. The architecture targets **Tier 2** (event-driven flex, 12.5–15 min response) as its primary operating range, with natural reach into **Tier 3** (scheduled/market-driven, hours ahead).
+
+**Tier 1** (FCR, aFRR — sub-second to 5 min response) is explicitly out of scope: these use cases require deterministic, continuous control loops via dedicated SCADA/PLC hardware (e.g., Beckhoff TwinCAT) that bypass the HEMS backend stack entirely.
+
+### Primary Markets (Tier 2)
+
+| Market | Operator | Why it fits |
+|---|---|---|
+| **mFRR (Tertiary Balancing Reserve)** | APG (Austrian TSO) | 12.5 min FAT, quarter-hourly delivery. The activation-confirmation-delivery-release cycle maps 1:1 to FlexRequest → FlexResponse → FlexStatus → FlexRelease |
+| **Local Congestion Management** | DSO (e.g., Netz NÖ, Wiener Netze) | Core use case. Segment-addressed MQTT topics are purpose-built for topological grid relief |
+| **Non-Frequency Ancillary Services (P-based)** | DSO | Active power adjustment for voltage support and congestion prevention. Same message flow as congestion management |
+
+### Secondary Markets (Tier 3 — reachable with the same stack)
+
+| Market | Operator | Why it fits |
+|---|---|---|
+| **Intraday Continuous / 15-min Auctions** | EXAA / EPEX SPOT | Same activation flow, scheduled rather than reactive. Well within gate closure timing |
+| **Day-ahead Market** | EXAA / EPEX SPOT | Schedule-based dispatch via the same MQTT/OpenADR stack |
+| **Local Flexibility Markets** | DSO / platform (NODES, Equigy) | MQTT + OpenADR for activation; market-facing interface (USEF/REST) on top |
+| **Dynamic Tariff Response** | Retailer / BRP | OpenADR's ELECTRICITY_PRICE signal type is native. MQTT coordinates pool response to prevent herd behavior |
+| **Capacity Markets / Strategic Reserve** | TSO / regulator | If Austria introduces capacity mechanisms, aggregated storage is eligible |
+
+See `../protocol-analysis-mqtt-vs-openadr.md` for the full protocol fitness analysis by market.
 
 ## Goals
 
 - **Primary**: Avoid curtailment of renewable generation and consumer loads
 - **Secondary**: Defer grid expansion investment
-- **Tertiary**: Enable aggregator market participation with distributed storage
+- **Tertiary**: Enable aggregator market participation with distributed storage (mFRR, intraday, flexibility markets)
 - **Quaternary**: Build operational experience with distributed flexibility in Austrian market
 
 ## Constraints

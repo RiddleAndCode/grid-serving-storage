@@ -186,3 +186,43 @@ This bridge logic is **manufacturer-specific** — each HEMS vendor implements i
 | Duration exceeded without release | OpenADR event duration expires naturally. Device auto-resumes normal operation |
 
 **Fail-safe principle**: Any failure at any layer defaults to normal prosumer-controlled operation.
+
+---
+
+## Protocol Fitness Across Markets
+
+The dual-protocol stack serves all serviceable markets (Tier 2 primary, Tier 3 secondary) with the same message flow. Only the upstream trigger differs.
+
+### Why MQTT + OpenADR Covers Multiple Markets
+
+| Market Requirement | How MQTT Addresses It | How OpenADR Addresses It |
+|---|---|---|
+| **Fast fan-out** (mFRR, congestion) | Pub/sub delivers to all backends in one publish | N/A — backend-to-device layer |
+| **Segment targeting** (congestion, nFAS) | Topic `flex/{agg}/{segment_id}/request` is purpose-built | N/A — addressing is at MQTT layer |
+| **Opt-in/opt-out** (all markets) | FlexResponse aggregates acceptance | optIn/optOut is native to OpenADR VEN |
+| **Delivery telemetry** (mFRR verification) | FlexStatus periodic updates at QoS 0 | oadrReport (TELEMETRY_USAGE) per device |
+| **Scheduled activation** (intraday, day-ahead) | FlexRequest with future timestamp + duration | oadrDistributeEvent with scheduled dtstart |
+| **Price signals** (dynamic tariffs) | Aggregator coordinates pool response | ELECTRICITY_PRICE signal type is native |
+| **Market-facing interface** (flex markets) | N/A — separate USEF/REST layer needed | N/A — neither protocol covers market bidding |
+
+### Protocol Suitability Summary
+
+| Market | MQTT | OpenADR | Recommended |
+|---|---|---|---|
+| **mFRR** | ★★★ | ★★★ | MQTT + OpenADR |
+| **Congestion management** | ★★★ | ★★★ | MQTT + OpenADR |
+| **nFAS (P-based)** | ★★★ | ★★★ | MQTT + OpenADR |
+| **Intraday** | ★★★ | ★★ | MQTT + OpenADR |
+| **Day-ahead** | ★★ | ★★★ | Either sufficient |
+| **Local flex markets** | ★★★ | ★★ | MQTT + OpenADR (activation) + USEF/REST (market) |
+| **Dynamic tariffs** | ★★ | ★★★ | OpenADR primary, MQTT for coordination |
+
+★★★ = excellent fit, ★★ = works well
+
+### What This Stack Does NOT Cover
+
+- **Tier 1 markets** (FCR, aFRR): Require dedicated SCADA/PLC with deterministic sub-second to 4-second control. Fundamentally different architecture.
+- **Q-based voltage support**: Requires direct inverter-level reactive power control (SunSpec Modbus / IEC 61850).
+- **Market bidding/settlement**: The upstream market interface (aggregator ↔ TSO/DSO/market platform) needs USEF, platform-specific REST APIs, or existing market processes — not MQTT/OpenADR.
+
+See `../protocol-analysis-mqtt-vs-openadr.md` for the full analysis.

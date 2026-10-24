@@ -107,6 +107,63 @@ Key decisions made in this interoperability profile and their rationale.
 
 **Consequence**: Aggregator must actively send requests and releases. No persistent standing orders.
 
+## D9: Segment-Agnostic HEMS Scope (Residential to Commercial)
+
+**Decision**: The profile does **not** restrict the type of HEMS or storage installation. It applies equally to **residential prosumers** (e.g., single-family home with PV + battery) and **commercial sites** (e.g., warehouse with large-scale storage).
+
+**Alternatives considered**:
+- Scope to residential HEMS only (simpler, more homogeneous)
+- Scope to commercial EMS only (larger flex volumes, fewer participants)
+
+**Rationale**:
+- The challenge problem statement explicitly covers "relatively small storage units in households to large storage systems at commercial sites"
+- The interoperability profile addresses the **interface** between HEMS Backends and the Technical Aggregator — this interface is the same regardless of what's behind the HEMS
+- The HEMS is treated as a **black box** behind a standardized protocol interface (OpenADR toward device, MQTT toward aggregator)
+- Restricting to one segment would reduce the available flexibility pool and limit reusability
+- The Austrian system architecture (Smart Grids Austria) does not differentiate by installation size at the interface level
+
+**Consequence**: The profile must accommodate heterogeneous device capabilities (small residential batteries vs. large commercial storage). The flex-request/response pattern handles this naturally — each device reports what it can deliver, regardless of size.
+
+## D10: Tier 2 Scope — mFRR and Congestion as Primary Markets
+
+**Decision**: The profile targets **Tier 2** (event-driven flex, 12.5–15 min response time) as its primary operating range. **Tier 1** (FCR, aFRR) is explicitly out of scope. **Tier 3** (day-ahead, intraday, flex markets) is naturally reachable with the same stack.
+
+**Alternatives considered**:
+- Include Tier 1 (FCR/aFRR) with tighter latency requirements
+- Scope only to congestion management (single market)
+- Design separate protocol stacks per market
+
+**Rationale**:
+- **Tier 1 requires SCADA/PLC hardware** (e.g., Beckhoff TwinCAT, Siemens S7) with deterministic sub-second to 4-second control loops — fundamentally incompatible with cloud-mediated HEMS backends
+- **mFRR's 12.5 min FAT** (ENTSO-E standard, APG compliant) provides ~12 minutes of headroom after the ~5–10 second signal chain — comfortable for opt-in/opt-out negotiation and retry logic
+- **The FlexRequest/FlexResponse cycle is market-agnostic** — the same message flow serves congestion management, mFRR, intraday trading, and flex market activation. Only the upstream trigger differs
+- **One protocol pair, many markets** — avoids the complexity of maintaining separate stacks per market product
+
+**Consequence**: The profile does not address FCR or aFRR. Aggregators serving those markets need a parallel SCADA-based architecture. The MQTT + OpenADR stack covers mFRR, congestion management, nFAS (P-based), intraday, day-ahead, and emerging flex markets.
+
+## D11: Protocol Fitness Across Markets
+
+**Decision**: The dual-protocol stack (MQTT upstream + OpenADR downstream) is validated as a **general-purpose flexibility activation stack**, not just a congestion management tool.
+
+**Market coverage analysis**:
+
+| Market | Protocol Fitness | Key Reason |
+|---|---|---|
+| mFRR | Excellent | Activation cycle maps 1:1 to FlexRequest/Response/Status/Release |
+| Congestion management | Excellent | Segment-addressed MQTT topics are purpose-built for topological grid relief |
+| nFAS (P-based) | Excellent | Same message flow as congestion management |
+| Intraday | Excellent | Same activation, scheduled rather than reactive |
+| Day-ahead | Good | OpenADR alone would suffice, but MQTT doesn't hurt |
+| Local flex markets | Excellent (activation) | Needs USEF/REST for market-facing bidding on top |
+| Dynamic tariffs | Good | OpenADR's ELECTRICITY_PRICE signal is native; MQTT coordinates pool |
+
+**Gaps requiring additional protocols**:
+- **Market-facing interfaces** (bidding, settlement): USEF or platform-specific REST APIs
+- **Q-based voltage support**: SunSpec Modbus / IEC 61850 (direct inverter control)
+- **Tier 1 balancing** (FCR, aFRR): IEC 61850 / IEC 60870-5-104 via SCADA
+
+See `../protocol-analysis-mqtt-vs-openadr.md` for the full protocol fitness analysis.
+
 ## D8: Grid Segment as Addressing Unit
 
 **Decision**: Flex-requests target a **grid segment** (`segment_id`), not individual devices or backends.
@@ -136,3 +193,6 @@ Key decisions made in this interoperability profile and their rationale.
 | D6 | Payload formats | JSON (MQTT) + XML (OpenADR) | Best fit per layer |
 | D7 | Failure mode | Fail-safe to prosumer control | Safety + regulatory compliance |
 | D8 | Addressing | Grid segment ID | Topological grid problem, DSO-defined |
+| D9 | HEMS scope | Segment-agnostic (residential to commercial) | Challenge scope + interface-level design |
+| D10 | Market scope | Tier 2 primary (mFRR, congestion), Tier 3 reachable | Tier 1 needs SCADA; HEMS backends serve Tier 2+ |
+| D11 | Protocol-market fitness | One stack, many markets | FlexRequest cycle is market-agnostic; only trigger differs |

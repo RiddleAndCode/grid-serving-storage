@@ -64,7 +64,8 @@ grid-serving-storage/
 │   ├── 03-process-flow.md                       ← sequence of interactions
 │   ├── 04-information-model.md                  ← message types & data model
 │   ├── 05-communication.md                      ← dual-protocol: OpenADR (HEMS) + MQTT (backend)
-│   └── 06-design-decisions.md                   ← key decisions & rationale
+│   ├── 06-design-decisions.md                   ← key decisions & rationale
+│   └── 07-interface-comparison-at-de.md         ← AT vs. DE interface comparison
 ├── open-questions.md                            ← unresolved items & next steps
 └── TODO.md                                      ← submission task list
 ```

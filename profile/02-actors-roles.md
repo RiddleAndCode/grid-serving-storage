@@ -84,19 +84,30 @@ Based on the Austrian system architecture for flexible assets (Smart Grids Austr
 
 **This is the upstream actor in our interface.**
 
+**Market scope**: The aggregator participates across multiple markets using the same MQTT + OpenADR activation stack:
+- **Balancing**: mFRR (tertiary reserve) via APG — 12.5 min full activation time, quarter-hourly delivery
+- **Grid services**: Local congestion management, P-based non-frequency ancillary services (nFAS) via DSO
+- **Wholesale**: Intraday continuous and 15-min auctions (EPEX SPOT / EXAA), day-ahead scheduling
+- **Flexibility**: Emerging local flexibility markets (NODES, Equigy), capacity markets
+
+FCR and aFRR are **not** serviceable through this architecture — they require dedicated SCADA/PLC infrastructure with sub-second to 4-second control cycles.
+
 **Responsibilities**:
 - Receive grid stress signals from DSO
+- Receive mFRR activation signals from TSO/APG
+- Bid into wholesale and flexibility markets on behalf of the pool
 - Determine which HEMS backends have devices in the affected grid segment
 - Send flex-requests to relevant HEMS backends (via **MQTT**)
 - Collect and aggregate flex-responses from HEMS backends
 - Monitor actual flex delivery during events
 - Report aggregated flex to DSO / market
-- Handle settlement with HEMS operators
+- Handle settlement with HEMS operators and market counterparties
 
 **Does NOT**:
 - Communicate directly with individual HEMS devices (that's the backend's job)
 - Override HEMS local constraints
 - Know the internal architecture of each HEMS manufacturer's device portfolio
+- Serve Tier 1 markets (FCR, aFRR) — these require a fundamentally different architecture
 
 ### HEMS Backend (HEMS Manufacturer's Cloud/Server)
 
