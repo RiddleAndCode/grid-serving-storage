@@ -81,7 +81,7 @@ grid-serving-storage/
 
 ## IES Methodology Layers Covered
 
-1. **Business Context** — use case narrative, actors, triggers, constraints
-2. **Function Layer** — process steps from grid signal to device response
-3. **Information Layer** — FlexRequest / FlexResponse / FlexRelease data model
-4. **Communication Layer** — OpenADR + MQTT dual-protocol specification
+1. **Business Context** — use case narrative, actors, triggers, constraints → [Use Case](profile/01-use-case.md), [Actors & Roles](profile/02-actors-roles.md)
+2. **Function Layer** — process steps from grid signal to device response → [Process Flow](profile/03-process-flow.md)
+3. **Information Layer** — FlexRequest / FlexResponse / FlexRelease data model → [Information Model](profile/04-information-model.md)
+4. **Communication Layer** — OpenADR + MQTT dual-protocol specification → [Communication](profile/05-communication.md)
