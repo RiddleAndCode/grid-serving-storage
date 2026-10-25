@@ -222,15 +222,17 @@ class HEMSBackend:
         online = [d for d in self.devices if d.online]
         total_pv = sum(d.pv_kw for d in online)
         total_consumption = sum(d.consumption_kw for d in online)
-        net = total_consumption - total_pv
 
-        # During active dispatch, reflect the battery power shift in net power
+        # During active dispatch, battery power shows up in production/consumption
+        # so that net = consumption - production always holds
         if self.active_dispatch:
             actual = self.active_dispatch.target_delta_kw * random.uniform(0.85, 1.0)
             if self.active_dispatch.direction == "down":
-                net -= actual  # discharging batteries offsets consumption
+                total_pv += actual  # discharging = site produces more
             else:
-                net += actual  # charging batteries adds to consumption
+                total_consumption += actual  # charging = site consumes more
+
+        net = total_consumption - total_pv
 
         return SiteStateSnapshot(
             site_id=self.id,
