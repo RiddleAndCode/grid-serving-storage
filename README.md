@@ -52,6 +52,12 @@ This profile specifically designs the **interface between HEMS Backends and the 
 ```
 grid-serving-storage/
 ├── README.md                                    ← you are here
+├── submission/
+│   ├── SUBMISSION.md                            ← hackathon submission (filled)
+│   ├── SUBMISSION.pdf                           ← submission as PDF
+│   ├── pitch-deck.md                            ← pitch deck (markdown source)
+│   ├── pitch-deck.pdf                           ← pitch deck (16:9 slides, PDF)
+│   └── pitch-deck.pptx                          ← pitch deck (PowerPoint)
 ├── challenge/
 │   ├── problem-statement.md                     ← original hackathon task
 │   ├── poster-systemarchitektur-v2g.pdf         ← Smart Grids Austria V2G poster
@@ -66,8 +72,21 @@ grid-serving-storage/
 │   ├── 05-communication.md                      ← dual-protocol: OpenADR (HEMS) + MQTT (backend)
 │   ├── 06-design-decisions.md                   ← key decisions & rationale
 │   └── 07-interface-comparison-at-de.md         ← AT vs. DE interface comparison
-├── open-questions.md                            ← unresolved items & next steps
-└── TODO.md                                      ← submission task list
+├── analysis/
+│   ├── aggregator-interface-spec.md             ← TypeScript types + MILP formulation
+│   └── protocol-analysis-mqtt-vs-openadr.md     ← protocol fitness across markets
+├── demo/                                        ← live simulation (see demo/README.md)
+│   ├── aggregator.py                            ← Technical Aggregator + portfolio MILP
+│   ├── backend_simulator.py                     ← HEMS backend simulator + device MILP
+│   ├── run_demo.py                              ← single-process demo orchestrator
+│   ├── dashboard.html                           ← browser dashboard (Chart.js + MQTT.js)
+│   ├── config.py                                ← shared constants + backend definitions
+│   ├── models.py                                ← dataclasses for MQTT message types
+│   ├── Dockerfile                               ← container image for Python services
+│   └── requirements.txt                         ← Python dependencies
+├── docker-compose.yml                           ← orchestrates broker + backends + aggregator
+├── mosquitto.conf                               ← Mosquitto config (MQTT + websockets)
+└── open-questions.md                            ← unresolved items & next steps
 ```
 
 ## Key Architecture Decisions
