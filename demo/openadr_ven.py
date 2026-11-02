@@ -130,11 +130,17 @@ class VENSimulator:
 
     def _get(self, path: str) -> Any:
         resp = httpx.get(f"{self.vtn_url}{path}", headers=self._headers(), timeout=10)
+        if resp.status_code == 401:
+            self.authenticate()
+            resp = httpx.get(f"{self.vtn_url}{path}", headers=self._headers(), timeout=10)
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, path: str, body: dict) -> Any:
         resp = httpx.post(f"{self.vtn_url}{path}", json=body, headers=self._headers(), timeout=10)
+        if resp.status_code == 401:
+            self.authenticate()
+            resp = httpx.post(f"{self.vtn_url}{path}", json=body, headers=self._headers(), timeout=10)
         resp.raise_for_status()
         return resp.json()
 

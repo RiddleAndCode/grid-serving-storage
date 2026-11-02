@@ -92,6 +92,17 @@ class HEMSBackend:
     def _vtn_headers(self) -> dict:
         return {"Authorization": f"Bearer {self.vtn_token}", "Content-Type": "application/json"}
 
+    def _vtn_reauth(self):
+        """Re-authenticate with the VTN to get a fresh token."""
+        resp = httpx.post(
+            f"{self.vtn_url}/auth/token",
+            json={"grant_type": "client_credentials", "client_id": f"backend-{self.id}", "client_secret": "demo"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        self.vtn_token = resp.json()["access_token"]
+        log.info(f"[{self.id}] Re-authenticated with VTN")
+
     def _create_vtn_dispatch_event(self, dispatch: AggregatorDispatch, total_delta_kw: float):
         """Create a single site-level OpenADR 3.1 event on the VTN for this dispatch.
 
@@ -125,6 +136,14 @@ class HEMSBackend:
                 headers=self._vtn_headers(),
                 timeout=10,
             )
+            if resp.status_code == 401:
+                self._vtn_reauth()
+                resp = httpx.post(
+                    f"{self.vtn_url}/events",
+                    json=event,
+                    headers=self._vtn_headers(),
+                    timeout=10,
+                )
             resp.raise_for_status()
             evt_id = resp.json().get("id", "unknown")
             self.vtn_event_ids.append(evt_id)
@@ -146,6 +165,14 @@ class HEMSBackend:
                 headers=self._vtn_headers(),
                 timeout=10,
             )
+            if resp.status_code == 401:
+                self._vtn_reauth()
+                resp = httpx.get(
+                    f"{self.vtn_url}/reports",
+                    params={"programID": "prg-flex-readiness"},
+                    headers=self._vtn_headers(),
+                    timeout=10,
+                )
             resp.raise_for_status()
             ven_reports = resp.json()
             # Find the most recent status report (has multiple resources, not forecast)
@@ -177,11 +204,19 @@ class HEMSBackend:
             return
         for evt_id in self.vtn_event_ids:
             try:
-                httpx.delete(
+                resp = httpx.delete(
                     f"{self.vtn_url}/events/{evt_id}",
                     headers=self._vtn_headers(),
                     timeout=10,
                 )
+                if resp.status_code == 401:
+                    self._vtn_reauth()
+                    resp = httpx.delete(
+                        f"{self.vtn_url}/events/{evt_id}",
+                        headers=self._vtn_headers(),
+                        timeout=10,
+                    )
+                resp.raise_for_status()
                 log.info(f"  OpenADR 3.1 VTN event deleted: {evt_id}")
             except Exception as e:
                 log.warning(f"  OpenADR 3.1 event delete failed for {evt_id}: {e}")
